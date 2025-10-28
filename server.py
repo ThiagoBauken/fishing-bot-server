@@ -161,33 +161,99 @@ DEFAULT_RULES = {
 
 class FishingSession:
     """
-    Sessão de pesca de um usuário
-    Mantém fish_count e decide quando executar ações (feed/clean/break)
+    🔒 SESSÃO DE PESCA - TODA LÓGICA PROTEGIDA AQUI!
+
+    Mantém fish_count e decide quando executar ações (feed/clean/break/rod_switch)
+    CLIENTE NÃO TEM ACESSO A ESSAS REGRAS - TUDO CONTROLADO PELO SERVIDOR
     """
     def __init__(self, login: str):
         self.login = login
+
+        # Contadores
         self.fish_count = 0
+        self.rod_uses = 0
+
+        # Trackers de última ação
+        self.last_clean_at = 0
+        self.last_feed_at = 0
+        self.last_break_at = 0
+        self.last_rod_switch_at = 0
+
+        # Timing
         self.session_start = datetime.now()
         self.last_fish_time = None
+
         logger.info(f"🎣 Nova sessão criada para: {login}")
 
-    def increment_fish(self):
-        """Incrementar contador de peixes"""
+    def increment_fish(self, rod_uses: int = None):
+        """Incrementar contador de peixes e usos de vara"""
         self.fish_count += 1
         self.last_fish_time = datetime.now()
-        logger.info(f"🐟 {self.login}: Peixe #{self.fish_count} capturado!")
+
+        if rod_uses is not None:
+            self.rod_uses = rod_uses
+
+        logger.info(f"🐟 {self.login}: Peixe #{self.fish_count} capturado! (Vara: {self.rod_uses} usos)")
+
+    # ─────────────────────────────────────────────────────────────
+    # 🔒 LÓGICA PROTEGIDA - REGRAS DE DECISÃO (NINGUÉM VÊ ISSO!)
+    # ─────────────────────────────────────────────────────────────
 
     def should_feed(self) -> bool:
-        """Verificar se precisa alimentar (a cada N peixes)"""
-        return self.fish_count % DEFAULT_RULES["feed_interval_fish"] == 0
+        """Regra: Alimentar a cada N peixes (protegida)"""
+        peixes_desde_ultimo = self.fish_count - self.last_feed_at
+        should = peixes_desde_ultimo >= DEFAULT_RULES["feed_interval_fish"]
+
+        if should:
+            logger.info(f"🍖 {self.login}: Trigger de feeding ({peixes_desde_ultimo} peixes)")
+            self.last_feed_at = self.fish_count
+
+        return should
 
     def should_clean(self) -> bool:
-        """Verificar se precisa limpar (a cada N peixes)"""
-        return self.fish_count % DEFAULT_RULES["clean_interval_fish"] == 0
+        """Regra: Limpar a cada N peixes (protegida)"""
+        peixes_desde_ultimo = self.fish_count - self.last_clean_at
+        should = peixes_desde_ultimo >= DEFAULT_RULES["clean_interval_fish"]
+
+        if should:
+            logger.info(f"🧹 {self.login}: Trigger de cleaning ({peixes_desde_ultimo} peixes)")
+            self.last_clean_at = self.fish_count
+
+        return should
 
     def should_break(self) -> bool:
-        """Verificar se precisa dar break (a cada N peixes)"""
-        return self.fish_count > 0 and self.fish_count % DEFAULT_RULES["break_interval_fish"] == 0
+        """Regra: Pausar a cada N peixes OU tempo decorrido (protegida)"""
+        peixes_desde_ultimo = self.fish_count - self.last_break_at
+        tempo_decorrido = (datetime.now() - self.session_start).seconds / 3600
+
+        # Pausar a cada X peixes OU a cada Y horas
+        should = peixes_desde_ultimo >= DEFAULT_RULES["break_interval_fish"] or tempo_decorrido >= 2.0
+
+        if should:
+            logger.info(f"☕ {self.login}: Trigger de break ({peixes_desde_ultimo} peixes ou {tempo_decorrido:.1f}h)")
+            self.last_break_at = self.fish_count
+
+        return should
+
+    def should_switch_rod(self) -> bool:
+        """Regra: Trocar vara a cada N usos (protegida)"""
+        should = self.rod_uses >= 20  # Trocar a cada 20 usos
+
+        if should:
+            logger.info(f"🎣 {self.login}: Trigger de rod switch ({self.rod_uses} usos)")
+            self.rod_uses = 0  # Reset contador
+
+        return should
+
+    def should_randomize_timing(self) -> bool:
+        """Regra: Randomizar timing para anti-ban (protegida)"""
+        import random
+        should = random.random() < 0.05  # 5% de chance
+
+        if should:
+            logger.info(f"🎲 {self.login}: Trigger de randomização de timing")
+
+        return should
 
 # ═══════════════════════════════════════════════════════
 # MODELOS DE DADOS
@@ -411,27 +477,54 @@ async def websocket_endpoint(websocket: WebSocket):
             # EVENTO: Peixe capturado (IMPORTANTE!)
             # ─────────────────────────────────────────────────
             if event == "fish_caught":
-                session.increment_fish()
+                # Extrair dados do evento
+                data = msg.get("data", {})
+                rod_uses = data.get("rod_uses", 0)
 
-                # Decidir próxima ação
+                # Incrementar contador
+                session.increment_fish(rod_uses=rod_uses)
+
+                # ═════════════════════════════════════════════════════════════
+                # 🔒 LÓGICA DE DECISÃO - TODA PROTEGIDA NO SERVIDOR!
+                # ═════════════════════════════════════════════════════════════
                 commands = []
 
-                # Alimentar a cada N peixes
+                # 1. Alimentar (a cada N peixes)
                 if session.should_feed():
                     commands.append({"cmd": "feed", "params": {"clicks": 5}})
-                    logger.info(f"🍖 {login}: Enviando comando de feeding")
+                    logger.info(f"🍖 {login}: Comando FEED enviado")
 
-                # Limpar a cada N peixes
+                # 2. Limpar (a cada N peixes)
                 if session.should_clean():
-                    commands.append({"cmd": "clean"})
-                    logger.info(f"🧹 {login}: Enviando comando de limpeza")
+                    commands.append({"cmd": "clean", "params": {}})
+                    logger.info(f"🧹 {login}: Comando CLEAN enviado")
 
-                # Break a cada N peixes
+                # 3. Pausar (a cada N peixes ou tempo)
                 if session.should_break():
-                    commands.append({"cmd": "break", "duration_minutes": DEFAULT_RULES["break_duration_minutes"]})
-                    logger.info(f"☕ {login}: Enviando comando de break")
+                    import random
+                    duration = random.randint(30, 60)  # Duração aleatória (anti-ban)
+                    commands.append({"cmd": "break", "params": {"duration_minutes": duration}})
+                    logger.info(f"☕ {login}: Comando BREAK enviado ({duration} min)")
 
-                # Enviar comandos
+                # 4. Trocar vara (a cada 20 usos)
+                if session.should_switch_rod():
+                    commands.append({"cmd": "switch_rod", "params": {}})
+                    logger.info(f"🎣 {login}: Comando SWITCH_ROD enviado")
+
+                # 5. Randomizar timing (5% chance - anti-ban)
+                if session.should_randomize_timing():
+                    import random
+                    commands.append({
+                        "cmd": "adjust_timing",
+                        "params": {
+                            "click_delay": random.uniform(0.08, 0.15),
+                            "movement_pause_min": random.uniform(0.2, 0.4),
+                            "movement_pause_max": random.uniform(0.5, 0.8)
+                        }
+                    })
+                    logger.info(f"🎲 {login}: Comando ADJUST_TIMING enviado")
+
+                # Enviar todos os comandos
                 for cmd in commands:
                     await websocket.send_json(cmd)
 
