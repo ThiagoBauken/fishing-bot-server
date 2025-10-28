@@ -3,6 +3,10 @@
 
 FROM python:3.11-slim
 
+# Argumento de build para porta (padrão 8122)
+ARG PORT=8122
+ENV PORT=${PORT}
+
 # Diretório de trabalho
 WORKDIR /app
 
@@ -18,12 +22,12 @@ COPY server.py .
 # Criar diretório para banco de dados
 RUN mkdir -p /app/data
 
-# Expor porta
-EXPOSE 8000
+# Expor porta (usa variável de ambiente)
+EXPOSE ${PORT}
 
-# Health check
+# Health check (usa variável de ambiente)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+  CMD python -c "import urllib.request, os; urllib.request.urlopen(f'http://localhost:{os.getenv(\"PORT\", \"8122\")}/health')"
 
-# Comando para rodar
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Comando para rodar (usa python server.py que lê do .env)
+CMD ["python", "server.py"]

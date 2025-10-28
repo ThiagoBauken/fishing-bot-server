@@ -17,17 +17,19 @@ from datetime import datetime
 from typing import Dict
 import logging
 import requests
+import os
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════
-# CONFIGURAÇÃO DO KEYMASTER
+# CONFIGURAÇÃO DO KEYMASTER (lê do .env)
 # ═══════════════════════════════════════════════════════
 
-KEYMASTER_URL = "https://private-keygen.pbzgje.easypanel.host"
-PROJECT_ID = "67a4a76a-d71b-4d07-9ba8-f7e794ce0578"
+KEYMASTER_URL = os.getenv("KEYMASTER_URL", "https://private-keygen.pbzgje.easypanel.host")
+PROJECT_ID = os.getenv("PROJECT_ID", "67a4a76a-d71b-4d07-9ba8-f7e794ce0578")
+PORT = int(os.getenv("PORT", "8122"))
 
 # FastAPI app
 app = FastAPI(
@@ -495,10 +497,17 @@ async def shutdown():
 
 if __name__ == "__main__":
     import uvicorn
+
+    # Ler configurações do .env
+    reload = os.getenv("RELOAD", "false").lower() == "true"
+    log_level = os.getenv("LOG_LEVEL", "info").lower()
+
+    logger.info(f"🚀 Iniciando servidor na porta {PORT}...")
+
     uvicorn.run(
         "server:app",
         host="0.0.0.0",
-        port=8000,
-        reload=True,  # Auto-reload em desenvolvimento
-        log_level="info"
+        port=PORT,
+        reload=reload,
+        log_level=log_level
     )
