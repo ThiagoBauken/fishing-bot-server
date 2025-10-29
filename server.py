@@ -944,12 +944,34 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # Verificar se precisa limpar por timeout
                 if session.should_clean_by_timeout(current_rod):
-                    # ✅ CORREÇÃO #1: Usar novo fluxo ActionSequenceBuilder
-                    # Solicitar detecção de peixes no inventário
-                    await websocket.send_json({
-                        "cmd": "request_inventory_scan"
+                    # ✅ NOVO: Usar fluxo de batch (igual fish_caught)
+                    # Timeout = limpar + verificar manutenção de varas
+                    operations = []
+
+                    # 🧹 SEMPRE adicionar cleaning (timeout trigger)
+                    operations.append({
+                        "type": "cleaning",
+                        "params": {
+                            "fish_templates": ["SALMONN", "shark", "herring", "anchovies", "trout"]
+                        }
                     })
-                    logger.info(f"🧹 {login}: Solicitando scan de inventário (trigger: timeout vara {current_rod})")
+                    logger.info(f"🧹 {login}: Operação CLEANING adicionada ao batch (timeout vara {current_rod})")
+
+                    # 🔧 TAMBÉM adicionar maintenance (verificar vara quebrada/sem isca)
+                    operations.append({
+                        "type": "maintenance",
+                        "params": {
+                            "current_rod": current_rod
+                        }
+                    })
+                    logger.info(f"🔧 {login}: Operação MAINTENANCE adicionada ao batch (verificar vara {current_rod})")
+
+                    # ✅ ENVIAR BATCH
+                    await websocket.send_json({
+                        "cmd": "execute_batch",
+                        "operations": operations
+                    })
+                    logger.info(f"📦 {login}: BATCH de timeout enviado ({len(operations)} operações: cleaning + maintenance)")
 
             # ─────────────────────────────────────────────────
             # ✅ NOVO: EVENTO: Feeding locations detected
