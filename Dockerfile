@@ -16,8 +16,8 @@ COPY requirements.txt .
 # Instalar dependências
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar código
-COPY server.py .
+# Copiar código (todos os arquivos Python necessários)
+COPY *.py .
 
 # Criar diretório para banco de dados
 RUN mkdir -p /app/data

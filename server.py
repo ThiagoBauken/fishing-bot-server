@@ -25,10 +25,23 @@ import os
 import sys
 
 # Adicionar diretório do script ao path (para imports locais)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
 
 # ✅ NOVO: Import do ActionSequenceBuilder para construir sequências
-from action_sequences import ActionSequenceBuilder
+try:
+    from action_sequences import ActionSequenceBuilder
+except ImportError:
+    # Fallback: tentar import relativo
+    try:
+        from .action_sequences import ActionSequenceBuilder
+    except ImportError:
+        # Último recurso: adicionar pasta server ao path
+        server_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'server')
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        from action_sequences import ActionSequenceBuilder
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)

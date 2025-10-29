@@ -1,0 +1,23 @@
+# Não copiar para o container Docker
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+.git/
+.gitignore
+.env
+.venv/
+venv/
+ENV/
+*.db
+*.sqlite
+*.sqlite3
+data/
+logs/
