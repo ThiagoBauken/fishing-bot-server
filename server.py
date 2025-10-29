@@ -23,6 +23,8 @@ import logging
 import requests
 import os
 import sys
+import queue  # ✅ CORREÇÃO #9: Para DatabasePool
+import threading  # ✅ CORREÇÃO #6 e #9: Para locks e pool
 
 # Adicionar diretório do script ao path (para imports locais)
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -140,6 +142,84 @@ def validate_with_keymaster(license_key: str, hwid: str) -> dict:
 # BANCO DE DADOS (SQLite - MÍNIMO!)
 # ═══════════════════════════════════════════════════════
 
+# ✅ CORREÇÃO #9: Connection Pool para 100+ usuários simultâneos
+class DatabasePool:
+    """
+    Pool de conexões SQLite para alta concorrência
+
+    SQLite tem limitações com writes simultâneos, então:
+    - Pool de conexões READ (compartilhadas)
+    - Conexão WRITE única com lock (serialize writes)
+    """
+    def __init__(self, db_path: str, pool_size: int = 10):
+        self.db_path = db_path
+        self.pool_size = pool_size
+        self.read_pool = queue.Queue(maxsize=pool_size)
+        self.write_lock = threading.Lock()
+        self._write_conn = None
+
+        # Criar pool de conexões READ
+        for _ in range(pool_size):
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row  # Retornar dicts
+            self.read_pool.put(conn)
+
+        # Criar conexão WRITE única
+        self._write_conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._write_conn.isolation_level = None  # Autocommit
+
+        logger.info(f"✅ Database pool criado: {pool_size} read connections, 1 write connection")
+
+    def get_read_connection(self):
+        """Pegar conexão READ do pool (context manager)"""
+        return _ReadConnection(self)
+
+    def get_write_connection(self):
+        """Pegar conexão WRITE (context manager)"""
+        return _WriteConnection(self)
+
+    def close_all(self):
+        """Fechar todas as conexões"""
+        while not self.read_pool.empty():
+            conn = self.read_pool.get()
+            conn.close()
+
+        if self._write_conn:
+            self._write_conn.close()
+
+class _ReadConnection:
+    """Context manager para conexões READ"""
+    def __init__(self, pool: DatabasePool):
+        self.pool = pool
+        self.conn = None
+
+    def __enter__(self):
+        self.conn = self.pool.read_pool.get()
+        return self.conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.conn:
+            self.pool.read_pool.put(self.conn)
+
+class _WriteConnection:
+    """Context manager para conexão WRITE"""
+    def __init__(self, pool: DatabasePool):
+        self.pool = pool
+
+    def __enter__(self):
+        self.pool.write_lock.acquire()
+        return self.pool._write_conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            self.pool._write_conn.commit()
+        else:
+            self.pool._write_conn.rollback()
+        self.pool.write_lock.release()
+
+# Criar pool global
+db_pool = DatabasePool("fishing_bot.db", pool_size=20)
+
 def init_database():
     """
     Inicializar banco de dados SQLite
@@ -147,23 +227,22 @@ def init_database():
     APENAS HWID BINDINGS (anti-compartilhamento)
     NÃO precisa de tabela users - Keymaster já valida!
     """
-    conn = sqlite3.connect("fishing_bot.db")
-    cursor = conn.cursor()
+    # ✅ CORREÇÃO #9: Usar pool de conexões
+    with db_pool.get_write_connection() as conn:
+        cursor = conn.cursor()
 
-    # Tabela de HWID (vincular license key a hardware ID)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS hwid_bindings (
-            license_key TEXT PRIMARY KEY,
-            hwid TEXT NOT NULL,
-            bound_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
-            pc_name TEXT,
-            login TEXT
-        )
-    """)
+        # Tabela de HWID (vincular license key a hardware ID)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS hwid_bindings (
+                license_key TEXT PRIMARY KEY,
+                hwid TEXT NOT NULL,
+                bound_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+                pc_name TEXT,
+                login TEXT
+            )
+        """)
 
-    conn.commit()
-    conn.close()
     logger.info("✅ Banco de dados inicializado (HWID bindings)")
 
 # Inicializar ao startar
@@ -174,6 +253,9 @@ init_database()
 # ═══════════════════════════════════════════════════════
 
 active_sessions: Dict[str, dict] = {}
+
+# ✅ CORREÇÃO #5: Thread-safety para active_sessions (100+ usuários simultâneos)
+sessions_lock = asyncio.Lock()
 
 # Regras de configuração (retornadas para o cliente)
 DEFAULT_RULES = {
@@ -191,6 +273,9 @@ class FishingSession:
     CLIENTE NÃO TEM ACESSO A ESSAS REGRAS - TUDO CONTROLADO PELO SERVIDOR
     """
     def __init__(self, login: str):
+        # ✅ CORREÇÃO #6: Thread-safety para modificações de estado (100+ usuários)
+        self.lock = threading.RLock()
+
         self.login = login
 
         # Contadores
@@ -223,26 +308,89 @@ class FishingSession:
 
         logger.info(f"🎣 Nova sessão criada para: {login}")
 
+    def _validate_config(self, config: dict) -> dict:
+        """
+        ✅ CORREÇÃO #4: Validar configurações para prevenir exploits
+
+        Regras de validação:
+        - Valores numéricos devem estar em ranges razoáveis
+        - Previne valores negativos
+        - Previne valores extremamente grandes (DoS)
+        - Garante tipos corretos
+
+        Args:
+            config: Configurações recebidas do cliente
+
+        Returns:
+            dict: Configurações validadas e sanitizadas
+
+        Raises:
+            ValueError: Se configurações inválidas
+        """
+        validated = {}
+
+        # Limites de validação (min, max, tipo)
+        limits = {
+            "fish_per_feed": (1, 100, int),
+            "clean_interval": (1, 50, int),
+            "rod_switch_limit": (1, 100, int),
+            "break_interval": (1, 200, int),
+            "break_duration": (1, 3600, int),
+            "maintenance_timeout": (1, 20, int),
+        }
+
+        for key, value in config.items():
+            if key in limits:
+                min_val, max_val, expected_type = limits[key]
+
+                # Validar tipo
+                if not isinstance(value, expected_type):
+                    try:
+                        value = expected_type(value)
+                    except (ValueError, TypeError):
+                        logger.warning(f"⚠️ {self.login}: Config '{key}' tipo inválido, usando padrão")
+                        continue
+
+                # Validar range
+                if value < min_val or value > max_val:
+                    logger.warning(f"⚠️ {self.login}: Config '{key}'={value} fora do range [{min_val}, {max_val}], ajustando")
+                    value = max(min_val, min(value, max_val))
+
+                validated[key] = value
+            else:
+                # Permitir outras configs, mas logar
+                validated[key] = value
+                logger.debug(f"⚙️ {self.login}: Config '{key}' aceita sem validação")
+
+        return validated
+
     def update_config(self, config: dict):
         """
         ✅ NOVO: Atualizar configurações do usuário
 
         Recebe configs do cliente e atualiza regras da sessão
         """
-        self.user_config.update(config)
+        # ✅ CORREÇÃO #4: Validar antes de aplicar
+        try:
+            validated_config = self._validate_config(config)
+            self.user_config.update(validated_config)
 
-        # Atualizar use_limit baseado em rod_switch_limit da config
-        if "rod_switch_limit" in config:
-            self.use_limit = config["rod_switch_limit"]
-            logger.info(f"⚙️ {self.login}: use_limit atualizado para {self.use_limit}")
+            # Atualizar use_limit baseado em rod_switch_limit da config
+            if "rod_switch_limit" in validated_config:
+                self.use_limit = validated_config["rod_switch_limit"]
+                logger.info(f"⚙️ {self.login}: use_limit atualizado para {self.use_limit}")
 
-        logger.info(f"⚙️ {self.login}: Configurações atualizadas: {config}")
+            logger.info(f"⚙️ {self.login}: Configurações atualizadas: {validated_config}")
+        except Exception as e:
+            logger.error(f"❌ {self.login}: Erro ao validar configs: {e}")
+            raise
 
     def increment_fish(self):
         """Incrementar contador de peixes"""
-        self.fish_count += 1
-        self.last_fish_time = datetime.now()
-        logger.info(f"🐟 {self.login}: Peixe #{self.fish_count} capturado!")
+        with self.lock:
+            self.fish_count += 1
+            self.last_fish_time = datetime.now()
+            logger.info(f"🐟 {self.login}: Peixe #{self.fish_count} capturado!")
 
     def increment_timeout(self, current_rod: int):
         """
@@ -251,13 +399,14 @@ class FishingSession:
         Args:
             current_rod: Número da vara que teve timeout (1-6)
         """
-        if current_rod not in self.rod_timeout_history:
-            self.rod_timeout_history[current_rod] = 0
+        with self.lock:
+            if current_rod not in self.rod_timeout_history:
+                self.rod_timeout_history[current_rod] = 0
 
-        self.rod_timeout_history[current_rod] += 1
-        self.total_timeouts += 1
+            self.rod_timeout_history[current_rod] += 1
+            self.total_timeouts += 1
 
-        logger.info(f"⏰ {self.login}: Timeout #{self.total_timeouts} - Vara {current_rod}: {self.rod_timeout_history[current_rod]} timeout(s) consecutivo(s)")
+            logger.info(f"⏰ {self.login}: Timeout #{self.total_timeouts} - Vara {current_rod}: {self.rod_timeout_history[current_rod]} timeout(s) consecutivo(s)")
 
     def reset_timeout(self, current_rod: int):
         """
@@ -266,11 +415,12 @@ class FishingSession:
         Args:
             current_rod: Número da vara que capturou peixe (1-6)
         """
-        if current_rod in self.rod_timeout_history:
-            old_count = self.rod_timeout_history[current_rod]
-            self.rod_timeout_history[current_rod] = 0
-            if old_count > 0:
-                logger.info(f"🎣 {self.login}: Vara {current_rod} - timeouts resetados ({old_count} → 0)")
+        with self.lock:
+            if current_rod in self.rod_timeout_history:
+                old_count = self.rod_timeout_history[current_rod]
+                self.rod_timeout_history[current_rod] = 0
+                if old_count > 0:
+                    logger.info(f"🎣 {self.login}: Vara {current_rod} - timeouts resetados ({old_count} → 0)")
 
     def should_clean_by_timeout(self, current_rod: int) -> bool:
         """
@@ -370,12 +520,13 @@ class FishingSession:
         Args:
             rod: Número da vara (1-6)
         """
-        if rod in self.rod_uses:
-            self.rod_uses[rod] += 1
-            self.current_rod = rod
-            logger.info(f"🎣 {self.login}: Vara {rod} usada ({self.rod_uses[rod]}/{self.use_limit} usos)")
-        else:
-            logger.warning(f"⚠️ {self.login}: Vara inválida: {rod}")
+        with self.lock:
+            if rod in self.rod_uses:
+                self.rod_uses[rod] += 1
+                self.current_rod = rod
+                logger.info(f"🎣 {self.login}: Vara {rod} usada ({self.rod_uses[rod]}/{self.use_limit} usos)")
+            else:
+                logger.warning(f"⚠️ {self.login}: Vara inválida: {rod}")
 
     def should_switch_rod_pair(self) -> bool:
         """
@@ -426,6 +577,25 @@ class FishingSession:
         logger.info(f"   ✅ current_rod atualizado para: {self.current_rod}")
 
         return next_pair[0]  # Retornar primeira vara do par
+
+    def cleanup(self):
+        """
+        ✅ CORREÇÃO #3: Cleanup de recursos ao desconectar
+
+        Libera recursos e salva estatísticas finais
+        """
+        with self.lock:
+            session_duration = (datetime.now() - self.session_start).total_seconds()
+            logger.info(f"🧹 {self.login}: Limpeza de sessão iniciada")
+            logger.info(f"   Duração: {session_duration:.1f}s")
+            logger.info(f"   Peixes capturados: {self.fish_count}")
+            logger.info(f"   Timeouts totais: {self.total_timeouts}")
+            logger.info(f"   Vara atual: {self.current_rod}")
+
+            # Limpar referências (opcional, mas boa prática)
+            self.user_config.clear()
+            self.rod_uses.clear()
+            self.rod_timeout_history.clear()
 
 # ═══════════════════════════════════════════════════════
 # MODELOS DE DADOS
@@ -497,62 +667,60 @@ async def activate_license(request: ActivationRequest):
         # 2. VERIFICAR HWID BINDING (Anti-compartilhamento)
         # ══════════════════════════════════════════════════════
 
-        conn = sqlite3.connect("fishing_bot.db")
-        cursor = conn.cursor()
+        # ✅ CORREÇÃO #9: Usar pool de conexões (write para SELECT+UPDATE/INSERT)
+        with db_pool.get_write_connection() as conn:
+            cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT hwid, pc_name, bound_at, login
-            FROM hwid_bindings
-            WHERE license_key=?
-        """, (request.license_key,))
+            cursor.execute("""
+                SELECT hwid, pc_name, bound_at, login
+                FROM hwid_bindings
+                WHERE license_key=?
+            """, (request.license_key,))
 
-        binding = cursor.fetchone()
+            binding = cursor.fetchone()
 
-        if binding:
-            # JÁ TEM HWID VINCULADO
-            bound_hwid, bound_pc_name, bound_at, bound_login = binding
+            if binding:
+                # JÁ TEM HWID VINCULADO
+                bound_hwid, bound_pc_name, bound_at, bound_login = binding
 
-            if request.hwid == bound_hwid:
-                # ✅ MESMO PC - permitir
-                logger.info(f"✅ HWID válido: {request.login} (PC: {request.pc_name or 'N/A'})")
+                if request.hwid == bound_hwid:
+                    # ✅ MESMO PC - permitir
+                    logger.info(f"✅ HWID válido: {request.login} (PC: {request.pc_name or 'N/A'})")
 
-                # Atualizar last_seen e login
-                cursor.execute("""
-                    UPDATE hwid_bindings
-                    SET last_seen=?, pc_name=?, login=?
-                    WHERE license_key=?
-                """, (datetime.now().isoformat(), request.pc_name, request.login, request.license_key))
-                conn.commit()
+                    # Atualizar last_seen e login
+                    cursor.execute("""
+                        UPDATE hwid_bindings
+                        SET last_seen=?, pc_name=?, login=?
+                        WHERE license_key=?
+                    """, (datetime.now().isoformat(), request.pc_name, request.login, request.license_key))
+                    # Commit automático via context manager
+
+                else:
+                    # ❌ PC DIFERENTE - bloquear
+                    logger.warning(f"🚫 HWID BLOQUEADO para license {request.license_key[:10]}...")
+                    logger.warning(f"   Login tentativa: {request.login}")
+                    logger.warning(f"   Login vinculado: {bound_login}")
+                    logger.warning(f"   PC esperado: {bound_pc_name}")
+                    logger.warning(f"   PC recebido: {request.pc_name}")
+
+                    return ActivationResponse(
+                        success=False,
+                        message=f"Esta licença já está vinculada a outro PC ({bound_pc_name or 'N/A'}). Login: {bound_login}"
+                    )
 
             else:
-                # ❌ PC DIFERENTE - bloquear
-                conn.close()
-                logger.warning(f"🚫 HWID BLOQUEADO para license {request.license_key[:10]}...")
-                logger.warning(f"   Login tentativa: {request.login}")
-                logger.warning(f"   Login vinculado: {bound_login}")
-                logger.warning(f"   PC esperado: {bound_pc_name}")
-                logger.warning(f"   PC recebido: {request.pc_name}")
+                # NÃO TEM HWID VINCULADO → VINCULAR AGORA (primeiro uso)
+                cursor.execute("""
+                    INSERT INTO hwid_bindings (license_key, hwid, pc_name, login)
+                    VALUES (?, ?, ?, ?)
+                """, (request.license_key, request.hwid, request.pc_name, request.login))
+                # Commit automático via context manager
 
-                return ActivationResponse(
-                    success=False,
-                    message=f"Esta licença já está vinculada a outro PC ({bound_pc_name or 'N/A'}). Login: {bound_login}"
-                )
-
-        else:
-            # NÃO TEM HWID VINCULADO → VINCULAR AGORA (primeiro uso)
-            cursor.execute("""
-                INSERT INTO hwid_bindings (license_key, hwid, pc_name, login)
-                VALUES (?, ?, ?, ?)
-            """, (request.license_key, request.hwid, request.pc_name, request.login))
-            conn.commit()
-
-            logger.info(f"🔗 HWID vinculado pela primeira vez:")
-            logger.info(f"   License: {request.license_key[:10]}...")
-            logger.info(f"   Login: {request.login}")
-            logger.info(f"   PC: {request.pc_name or 'N/A'}")
-            logger.info(f"   HWID: {request.hwid[:16]}...")
-
-        conn.close()
+                logger.info(f"🔗 HWID vinculado pela primeira vez:")
+                logger.info(f"   License: {request.license_key[:10]}...")
+                logger.info(f"   Login: {request.login}")
+                logger.info(f"   PC: {request.pc_name or 'N/A'}")
+                logger.info(f"   HWID: {request.hwid[:16]}...")
 
         # ══════════════════════════════════════════════════════
         # 3. GERAR TOKEN E RETORNAR REGRAS
@@ -605,11 +773,11 @@ async def websocket_endpoint(websocket: WebSocket):
         license_key = token.split(":")[0] if ":" in token else token
 
         # 2. VALIDAR TOKEN (verificar HWID binding)
-        conn = sqlite3.connect("fishing_bot.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT login, pc_name FROM hwid_bindings WHERE license_key=?", (license_key,))
-        binding = cursor.fetchone()
-        conn.close()
+        # ✅ CORREÇÃO #9: Usar pool de conexões (read para SELECT apenas)
+        with db_pool.get_read_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT login, pc_name FROM hwid_bindings WHERE license_key=?", (license_key,))
+            binding = cursor.fetchone()
 
         if not binding:
             await websocket.send_json({"error": "Token inválido ou licença não vinculada"})
@@ -621,14 +789,15 @@ async def websocket_endpoint(websocket: WebSocket):
         # 3. CRIAR FISHING SESSION (mantém fish_count e decide ações)
         session = FishingSession(login)
 
-        # 4. REGISTRAR SESSÃO ATIVA
-        active_sessions[license_key] = {
-            "login": login,
-            "pc_name": pc_name,
-            "websocket": websocket,
-            "connected_at": datetime.now(),
-            "session": session  # ✅ Adicionar session
-        }
+        # 4. REGISTRAR SESSÃO ATIVA (thread-safe)
+        async with sessions_lock:
+            active_sessions[license_key] = {
+                "login": login,
+                "pc_name": pc_name,
+                "websocket": websocket,
+                "connected_at": datetime.now(),
+                "session": session  # ✅ Adicionar session
+            }
 
         logger.info(f"🟢 Cliente conectado: {login} (PC: {pc_name})")
 
@@ -669,16 +838,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 commands = []
 
                 # 🎣 PRIORIDADE 1: Trocar par de varas (se AMBAS esgotadas)
+                # ✅ CORREÇÃO #2: Usar fluxo de maintenance via ActionSequenceBuilder
                 if session.should_switch_rod_pair():
-                    next_rod = session.get_next_pair_rod()
                     commands.append({
-                        "cmd": "switch_rod_pair",
-                        "params": {
-                            "target_rod": next_rod,
-                            "will_open_chest": True  # Vai precisar abrir baú
-                        }
+                        "cmd": "request_rod_analysis"
                     })
-                    logger.info(f"🎣 {login}: Comando SWITCH_ROD_PAIR enviado → Vara {next_rod}")
+                    logger.info(f"🎣 {login}: Solicitando análise de varas (trigger: switch_rod_pair)")
 
                 # 🍖 PRIORIDADE 2: Alimentar (a cada N peixes)
                 if session.should_feed():
@@ -750,25 +915,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # Verificar se precisa limpar por timeout
                 if session.should_clean_by_timeout(current_rod):
-                    # Enviar comando de limpeza
+                    # ✅ CORREÇÃO #1: Usar novo fluxo ActionSequenceBuilder
+                    # Solicitar detecção de peixes no inventário
                     await websocket.send_json({
-                        "cmd": "clean",
-                        "params": {
-                            # Coordenadas do chest (PROTEGIDAS no servidor!)
-                            "chest_x": 1400,
-                            "chest_y": 500,
-                            # Área de scan do inventário
-                            "inventory_area": {
-                                "x1": 633,
-                                "y1": 541,
-                                "x2": 1233,
-                                "y2": 953
-                            },
-                            # Coordenadas do divisor (esquerda=inventory, direita=chest)
-                            "divider_x": 1243
-                        }
+                        "cmd": "request_inventory_scan"
                     })
-                    logger.info(f"🧹 {login}: Comando CLEAN enviado (trigger: timeout vara {current_rod})")
+                    logger.info(f"🧹 {login}: Solicitando scan de inventário (trigger: timeout vara {current_rod})")
 
             # ─────────────────────────────────────────────────
             # ✅ NOVO: EVENTO: Feeding locations detected
@@ -904,10 +1056,16 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"❌ Erro no WebSocket ({license_key or 'desconhecido'}): {e}")
 
     finally:
-        # Remover sessão
-        if license_key and license_key in active_sessions:
-            del active_sessions[license_key]
-            logger.info(f"🗑️ Sessão removida: {license_key}")
+        # Remover sessão (thread-safe)
+        async with sessions_lock:
+            if license_key and license_key in active_sessions:
+                # ✅ CORREÇÃO #3: Cleanup antes de remover
+                session_data = active_sessions[license_key]
+                if "session" in session_data:
+                    session_data["session"].cleanup()
+
+                del active_sessions[license_key]
+                logger.info(f"🗑️ Sessão removida: {license_key}")
 
 # ═══════════════════════════════════════════════════════
 # STARTUP
@@ -926,12 +1084,22 @@ async def startup():
 async def shutdown():
     logger.info("🛑 Encerrando servidor...")
 
-    # Fechar todas as conexões
-    for email, data in active_sessions.items():
+    # Fechar todas as conexões (thread-safe)
+    async with sessions_lock:
+        sessions_to_close = list(active_sessions.items())
+
+    for email, data in sessions_to_close:
         try:
+            # ✅ CORREÇÃO #3: Cleanup de cada sessão
+            if "session" in data:
+                data["session"].cleanup()
             await data["websocket"].close()
         except:
             pass
+
+    # ✅ CORREÇÃO #9: Fechar pool de conexões do banco
+    db_pool.close_all()
+    logger.info("✅ Database pool fechado")
 
     logger.info("✅ Servidor encerrado")
 
