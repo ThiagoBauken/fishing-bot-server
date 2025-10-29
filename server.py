@@ -5,6 +5,10 @@ Gerencia autenticação, licenças e lógica de decisão
 
 VALIDAÇÃO AUTOMÁTICA COM KEYMASTER
 Não precisa adicionar license keys manualmente!
+
+🔒 NÍVEL 2 DE PROTEÇÃO:
+Servidor envia COORDENADAS e SEQUÊNCIAS completas
+Cliente apenas EXECUTA cegamente
 """
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
@@ -18,6 +22,9 @@ from typing import Dict
 import logging
 import requests
 import os
+
+# Importar ActionBuilder
+from action_builder import ActionBuilder
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -527,6 +534,81 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Enviar todos os comandos
                 for cmd in commands:
                     await websocket.send_json(cmd)
+
+            # ─────────────────────────────────────────────────
+            # ✅ NOVO: EVENTO: Template detectado (coordenadas)
+            # ─────────────────────────────────────────────────
+            elif event == "template_detected":
+                # Extrair dados da detecção
+                data = msg.get("data", {})
+                template_name = data.get("template")
+                location = data.get("location", {})
+                x = location.get("x")
+                y = location.get("y")
+
+                logger.info(f"👁️  {login}: Detecção recebida - {template_name} em ({x}, {y})")
+
+                # ═════════════════════════════════════════════════════════════
+                # 🧠 ANÁLISE DE CONTEXTO - SERVIDOR DECIDE O QUE FAZER
+                # ═════════════════════════════════════════════════════════════
+
+                command = None
+
+                # ALIMENTAÇÃO: Detectou botão "eat" ou "filefrito"
+                if template_name in ["eat_button", "eat", "filefrito"] and session.should_feed():
+                    logger.info(f"🧠 {login}: Servidor decidiu ALIMENTAR (fish_count={session.fish_count})")
+
+                    # Servidor decide TUDO: quantos cliques, intervalo, sequência
+                    command = {
+                        "cmd": "sequence",
+                        "actions": [
+                            {"cmd": "move", "x": x, "y": y},
+                            {"cmd": "wait", "duration": 0.2},
+                            {"cmd": "click", "button": "left", "repeat": 5, "interval": 0.3},
+                            {"cmd": "wait", "duration": 1.0}
+                        ]
+                    }
+
+                    session.fed()  # Marcar que alimentou
+
+                # LIMPEZA: Detectou item no inventário para limpar
+                elif template_name in ["item_trash", "inventory_item"] and session.should_clean():
+                    logger.info(f"🧠 {login}: Servidor decidiu LIMPAR (fish_count={session.fish_count})")
+
+                    # Servidor decide SEQUÊNCIA completa de arrastar itens
+                    # Coordenadas do chest são protegidas no servidor!
+                    chest_x, chest_y = 1400, 500  # Coordenada do chest (protegida!)
+
+                    command = {
+                        "cmd": "sequence",
+                        "actions": [
+                            {"cmd": "drag", "start_x": x, "start_y": y, "end_x": chest_x, "end_y": chest_y, "duration": 1.0},
+                            {"cmd": "wait", "duration": 0.5}
+                        ]
+                    }
+
+                    session.cleaned()  # Marcar que limpou
+
+                # MANUTENÇÃO DE VARAS: Detectou vara quebrada
+                elif template_name == "varaquebrada":
+                    logger.info(f"🧠 {login}: Servidor decidiu TROCAR VARA (quebrada detectada)")
+
+                    # Servidor decide SEQUÊNCIA completa: abrir baú, pegar vara, trocar
+                    command = {
+                        "cmd": "sequence",
+                        "actions": [
+                            {"cmd": "key_press", "key": "e", "duration": 0.1},  # Abrir baú
+                            {"cmd": "wait", "duration": 1.0},
+                            # ... mais ações conforme necessário
+                        ]
+                    }
+
+                # Se servidor decidiu fazer algo, enviar comando
+                if command:
+                    await websocket.send_json(command)
+                    logger.info(f"✅ {login}: Comando enviado ao cliente")
+                else:
+                    logger.debug(f"ℹ️  {login}: Servidor decidiu NÃO fazer nada com {template_name}")
 
             # ─────────────────────────────────────────────────
             # EVENTO: Feeding concluído
