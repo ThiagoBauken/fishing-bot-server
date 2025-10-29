@@ -834,57 +834,75 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # ═════════════════════════════════════════════════════════════
                 # 🔒 LÓGICA DE DECISÃO - TODA PROTEGIDA NO SERVIDOR!
+                # ✅ NOVA ARQUITETURA: Coletar operações e enviar em BATCH
                 # ═════════════════════════════════════════════════════════════
-                commands = []
+                operations = []
 
-                # 🎣 PRIORIDADE 1: Trocar par de varas (se AMBAS esgotadas)
-                # ✅ CORREÇÃO #2: Usar fluxo de maintenance via ActionSequenceBuilder
-                if session.should_switch_rod_pair():
-                    commands.append({
-                        "cmd": "request_rod_analysis"
-                    })
-                    logger.info(f"🎣 {login}: Solicitando análise de varas (trigger: switch_rod_pair)")
-
-                # 🍖 PRIORIDADE 2: Alimentar (a cada N peixes)
+                # 🍖 PRIORIDADE 1: Alimentar (a cada N peixes)
                 if session.should_feed():
-                    # Solicitar detecção de comida e botão eat
-                    commands.append({
-                        "cmd": "request_template_detection",
-                        "templates": ["filefrito", "eat"]
+                    operations.append({
+                        "type": "feeding",
+                        "params": {
+                            "feeds_per_session": 2,  # Quantas vezes comer
+                            "food_template": "filefrito",
+                            "eat_template": "eat"
+                        }
                     })
-                    logger.info(f"🍖 {login}: Solicitando detecção de comida (feeding)")
+                    logger.info(f"🍖 {login}: Operação FEEDING adicionada ao batch")
 
-                # 🧹 PRIORIDADE 3: Limpar (a cada N peixes)
+                # 🧹 PRIORIDADE 2: Limpar (a cada N peixes)
                 if session.should_clean():
-                    # Solicitar scan de inventário
-                    commands.append({
-                        "cmd": "request_inventory_scan"
+                    operations.append({
+                        "type": "cleaning",
+                        "params": {
+                            "fish_templates": ["SALMONN", "shark", "herring", "anchovies", "trout"]
+                        }
                     })
-                    logger.info(f"🧹 {login}: Solicitando scan de inventário (cleaning)")
+                    logger.info(f"🧹 {login}: Operação CLEANING adicionada ao batch")
+
+                # 🎣 PRIORIDADE 3: Trocar par de varas (se AMBAS esgotadas)
+                if session.should_switch_rod_pair():
+                    target_rod = session.get_next_pair_rod()
+                    operations.append({
+                        "type": "switch_rod_pair",
+                        "params": {
+                            "target_rod": target_rod
+                        }
+                    })
+                    logger.info(f"🎣 {login}: Operação SWITCH_ROD_PAIR adicionada ao batch (→ Vara {target_rod})")
 
                 # ☕ PRIORIDADE 4: Pausar (a cada N peixes ou tempo)
                 if session.should_break():
                     import random
                     duration = random.randint(30, 60)  # Duração aleatória (anti-ban)
-                    commands.append({"cmd": "break", "params": {"duration_minutes": duration}})
-                    logger.info(f"☕ {login}: Comando BREAK enviado ({duration} min)")
+                    operations.append({
+                        "type": "break",
+                        "params": {
+                            "duration_minutes": duration
+                        }
+                    })
+                    logger.info(f"☕ {login}: Operação BREAK adicionada ao batch ({duration} min)")
 
                 # 🎲 PRIORIDADE 5: Randomizar timing (5% chance - anti-ban)
                 if session.should_randomize_timing():
                     import random
-                    commands.append({
-                        "cmd": "adjust_timing",
+                    operations.append({
+                        "type": "adjust_timing",
                         "params": {
                             "click_delay": random.uniform(0.08, 0.15),
                             "movement_pause_min": random.uniform(0.2, 0.4),
                             "movement_pause_max": random.uniform(0.5, 0.8)
                         }
                     })
-                    logger.info(f"🎲 {login}: Comando ADJUST_TIMING enviado")
+                    logger.info(f"🎲 {login}: Operação ADJUST_TIMING adicionada ao batch")
 
-                # Enviar todos os comandos
-                for cmd in commands:
-                    await websocket.send_json(cmd)
+                # ✅ ENVIAR BATCH ÚNICO (ao invés de comandos separados)
+                if operations:
+                    await websocket.send_json({
+                        "cmd": "execute_batch",
+                        "operations": operations
+                    })
+                    logger.info(f"📦 {login}: BATCH enviado com {len(operations)} operação(ões): {[op['type'] for op in operations]}")
 
             # ─────────────────────────────────────────────────
             # ✅ NOVO: EVENTO: Sincronizar configurações do cliente
@@ -1001,13 +1019,44 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.info(f"✅ {login}: Sequência de maintenance enviada ({len(sequence)} ações)")
 
             # ─────────────────────────────────────────────────
-            # ✅ NOVO: EVENTO: Sequence completed
+            # ✅ NOVO: EVENTO: Batch completed (NOVA ARQUITETURA)
+            # ─────────────────────────────────────────────────
+            elif event == "batch_completed":
+                data = msg.get("data", {})
+                operations = data.get("operations", [])
+
+                logger.info(f"✅ {login}: BATCH concluído com {len(operations)} operação(ões): {operations}")
+
+                # Atualizar contadores de sessão baseado em quais operações foram executadas
+                if "feeding" in operations:
+                    session.last_feed_at = session.fish_count
+                if "cleaning" in operations:
+                    session.last_clean_at = session.fish_count
+                if "switch_rod_pair" in operations:
+                    session.last_rod_switch_at = session.fish_count
+
+            # ─────────────────────────────────────────────────
+            # ✅ NOVO: EVENTO: Batch failed (NOVA ARQUITETURA)
+            # ─────────────────────────────────────────────────
+            elif event == "batch_failed":
+                data = msg.get("data", {})
+                operation = data.get("operation", "unknown")
+                error = data.get("error", "")
+
+                logger.error(f"❌ {login}: BATCH falhou na operação {operation}: {error}")
+
+                # TODO: Decidir o que fazer em caso de falha
+                # - Retry?
+                # - Abortar?
+                # - Notificar usuário?
+
+            # ─────────────────────────────────────────────────
+            # ⚠️ DEPRECATED: Eventos antigos (manter por compatibilidade temporária)
             # ─────────────────────────────────────────────────
             elif event == "sequence_completed":
                 data = msg.get("data", {})
                 operation = data.get("operation", "unknown")
-
-                logger.info(f"✅ {login}: Sequência {operation} concluída com sucesso")
+                logger.info(f"✅ {login}: Sequência {operation} concluída com sucesso (DEPRECATED - use batch_completed)")
 
                 # Atualizar contadores de sessão
                 if operation == "feeding":
@@ -1015,21 +1064,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif operation == "cleaning":
                     session.last_clean_at = session.fish_count
 
-            # ─────────────────────────────────────────────────
-            # ✅ NOVO: EVENTO: Sequence failed
-            # ─────────────────────────────────────────────────
             elif event == "sequence_failed":
                 data = msg.get("data", {})
                 operation = data.get("operation", "unknown")
                 step_index = data.get("step_index", 0)
                 error = data.get("error", "")
-
-                logger.error(f"❌ {login}: Sequência {operation} falhou no step {step_index}: {error}")
-
-                # TODO: Decidir o que fazer em caso de falha
-                # - Retry?
-                # - Abortar?
-                # - Notificar usuário?
+                logger.error(f"❌ {login}: Sequência {operation} falhou no step {step_index}: {error} (DEPRECATED - use batch_failed)")
 
             # ─────────────────────────────────────────────────
             # EVENTO: Feeding concluído
