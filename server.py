@@ -160,8 +160,8 @@ active_sessions: Dict[str, dict] = {}
 
 # Regras de configuração (retornadas para o cliente)
 DEFAULT_RULES = {
-    "feed_interval_fish": 3,       # Alimentar a cada 3 peixes
-    "clean_interval_fish": 1,      # Limpar a cada 1 peixe
+    "feed_interval_fish": 1,       # Alimentar a cada 1 peixe
+    "clean_interval_fish": 2,      # Limpar a cada 2 peixes
     "break_interval_fish": 50,     # Pausar a cada 50 peixes
     "break_duration_minutes": 45   # Duração do break
 }
@@ -178,7 +178,13 @@ class FishingSession:
 
         # Contadores
         self.fish_count = 0
-        self.rod_uses = 0
+
+        # ✅ Rod tracking multi-vara (sistema de 6 varas em 3 pares)
+        self.rod_uses = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}  # Uso por vara
+        self.current_rod = 1  # Vara atual em uso
+        self.current_pair_index = 0  # Par atual (0=Par1, 1=Par2, 2=Par3)
+        self.rod_pairs = [(1,2), (3,4), (5,6)]  # Pares de varas
+        self.use_limit = 20  # Limite de usos por vara antes de trocar par
 
         # Trackers de última ação
         self.last_clean_at = 0
@@ -192,15 +198,11 @@ class FishingSession:
 
         logger.info(f"🎣 Nova sessão criada para: {login}")
 
-    def increment_fish(self, rod_uses: int = None):
-        """Incrementar contador de peixes e usos de vara"""
+    def increment_fish(self):
+        """Incrementar contador de peixes"""
         self.fish_count += 1
         self.last_fish_time = datetime.now()
-
-        if rod_uses is not None:
-            self.rod_uses = rod_uses
-
-        logger.info(f"🐟 {self.login}: Peixe #{self.fish_count} capturado! (Vara: {self.rod_uses} usos)")
+        logger.info(f"🐟 {self.login}: Peixe #{self.fish_count} capturado!")
 
     # ─────────────────────────────────────────────────────────────
     # 🔒 LÓGICA PROTEGIDA - REGRAS DE DECISÃO (NINGUÉM VÊ ISSO!)
@@ -261,6 +263,74 @@ class FishingSession:
             logger.info(f"🎲 {self.login}: Trigger de randomização de timing")
 
         return should
+
+    # ─────────────────────────────────────────────────────────────
+    # 🎣 ROD TRACKING SYSTEM (Multi-vara)
+    # ─────────────────────────────────────────────────────────────
+
+    def increment_rod_use(self, rod: int):
+        """
+        Incrementar uso de vara específica
+
+        Args:
+            rod: Número da vara (1-6)
+        """
+        if rod in self.rod_uses:
+            self.rod_uses[rod] += 1
+            self.current_rod = rod
+            logger.info(f"🎣 {self.login}: Vara {rod} usada ({self.rod_uses[rod]}/{self.use_limit} usos)")
+        else:
+            logger.warning(f"⚠️ {self.login}: Vara inválida: {rod}")
+
+    def should_switch_rod_pair(self) -> bool:
+        """
+        Verificar se deve trocar de par de varas
+
+        Regra: Trocar quando AMBAS as varas do par atual atingirem o limite de usos
+
+        Returns:
+            bool: True se deve trocar de par
+        """
+        current_pair = self.rod_pairs[self.current_pair_index]
+        rod1, rod2 = current_pair
+
+        # Checar se AMBAS as varas do par atingiram limite
+        rod1_exhausted = self.rod_uses[rod1] >= self.use_limit
+        rod2_exhausted = self.rod_uses[rod2] >= self.use_limit
+
+        if rod1_exhausted and rod2_exhausted:
+            logger.info(f"🔄 {self.login}: Par {current_pair} esgotado (Vara {rod1}: {self.rod_uses[rod1]}, Vara {rod2}: {self.rod_uses[rod2]})")
+            return True
+
+        return False
+
+    def get_next_pair_rod(self) -> int:
+        """
+        Obter primeira vara do próximo par e resetar contadores
+
+        Returns:
+            int: Número da primeira vara do próximo par
+        """
+        # Avançar para próximo par (circular)
+        next_pair_index = (self.current_pair_index + 1) % len(self.rod_pairs)
+        next_pair = self.rod_pairs[next_pair_index]
+
+        # Atualizar índice
+        self.current_pair_index = next_pair_index
+
+        # Reset contadores do novo par
+        rod1, rod2 = next_pair
+        self.rod_uses[rod1] = 0
+        self.rod_uses[rod2] = 0
+
+        # ✅ ATUALIZAR current_rod para primeira vara do novo par
+        self.current_rod = next_pair[0]
+
+        logger.info(f"🔄 {self.login}: Mudança Par{self.current_pair_index} → Par{next_pair_index+1} {next_pair}")
+        logger.info(f"   Primeira vara do novo par: {next_pair[0]}")
+        logger.info(f"   ✅ current_rod atualizado para: {self.current_rod}")
+
+        return next_pair[0]  # Retornar primeira vara do par
 
 # ═══════════════════════════════════════════════════════
 # MODELOS DE DADOS
@@ -487,38 +557,65 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Extrair dados do evento
                 data = msg.get("data", {})
                 rod_uses = data.get("rod_uses", 0)
+                current_rod = data.get("current_rod", 1)  # ✅ NOVO: Vara atual
 
-                # Incrementar contador
-                session.increment_fish(rod_uses=rod_uses)
+                # Incrementar contador de peixes
+                session.increment_fish()
+
+                # ✅ NOVO: Incrementar uso da vara atual
+                session.increment_rod_use(current_rod)
 
                 # ═════════════════════════════════════════════════════════════
                 # 🔒 LÓGICA DE DECISÃO - TODA PROTEGIDA NO SERVIDOR!
                 # ═════════════════════════════════════════════════════════════
                 commands = []
 
-                # 1. Alimentar (a cada N peixes)
+                # 🎣 PRIORIDADE 1: Trocar par de varas (se AMBAS esgotadas)
+                if session.should_switch_rod_pair():
+                    next_rod = session.get_next_pair_rod()
+                    commands.append({
+                        "cmd": "switch_rod_pair",
+                        "params": {
+                            "target_rod": next_rod,
+                            "will_open_chest": True  # Vai precisar abrir baú
+                        }
+                    })
+                    logger.info(f"🎣 {login}: Comando SWITCH_ROD_PAIR enviado → Vara {next_rod}")
+
+                # 🍖 PRIORIDADE 2: Alimentar (a cada N peixes)
                 if session.should_feed():
                     commands.append({"cmd": "feed", "params": {"clicks": 5}})
                     logger.info(f"🍖 {login}: Comando FEED enviado")
 
-                # 2. Limpar (a cada N peixes)
+                # 🧹 PRIORIDADE 3: Limpar (a cada N peixes)
                 if session.should_clean():
-                    commands.append({"cmd": "clean", "params": {}})
-                    logger.info(f"🧹 {login}: Comando CLEAN enviado")
+                    commands.append({
+                        "cmd": "clean",
+                        "params": {
+                            # Coordenadas do chest (PROTEGIDAS no servidor!)
+                            "chest_x": 1400,
+                            "chest_y": 500,
+                            # Área de scan do inventário
+                            "inventory_area": {
+                                "x1": 633,   # inventory_area[0]
+                                "y1": 541,   # inventory_area[1]
+                                "x2": 1233,  # inventory_area[2]
+                                "y2": 953    # inventory_area[3]
+                            },
+                            # Coordenadas do divisor (esquerda=inventory, direita=chest)
+                            "divider_x": 1243
+                        }
+                    })
+                    logger.info(f"🧹 {login}: Comando CLEAN enviado (com coordenadas do chest)")
 
-                # 3. Pausar (a cada N peixes ou tempo)
+                # ☕ PRIORIDADE 4: Pausar (a cada N peixes ou tempo)
                 if session.should_break():
                     import random
                     duration = random.randint(30, 60)  # Duração aleatória (anti-ban)
                     commands.append({"cmd": "break", "params": {"duration_minutes": duration}})
                     logger.info(f"☕ {login}: Comando BREAK enviado ({duration} min)")
 
-                # 4. Trocar vara (a cada 20 usos)
-                if session.should_switch_rod():
-                    commands.append({"cmd": "switch_rod", "params": {}})
-                    logger.info(f"🎣 {login}: Comando SWITCH_ROD enviado")
-
-                # 5. Randomizar timing (5% chance - anti-ban)
+                # 🎲 PRIORIDADE 5: Randomizar timing (5% chance - anti-ban)
                 if session.should_randomize_timing():
                     import random
                     commands.append({
