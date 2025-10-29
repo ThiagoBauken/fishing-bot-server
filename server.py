@@ -860,6 +860,17 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     logger.info(f"🧹 {login}: Operação CLEANING adicionada ao batch")
 
+                # 🔄 PRIORIDADE 2.5: Trocar vara dentro do par (SEMPRE após pescar)
+                # ✅ CORREÇÃO: Cliente NÃO decide mais - servidor envia comando!
+                # Regra: Trocar vara a cada peixe (vara 1 → vara 2 → vara 1 → ...)
+                operations.append({
+                    "type": "switch_rod",
+                    "params": {
+                        "will_open_chest": False  # Troca sem abrir baú
+                    }
+                })
+                logger.info(f"🔄 {login}: Operação SWITCH_ROD adicionada ao batch (troca no par)")
+
                 # 🎣 PRIORIDADE 3: Trocar par de varas (se AMBAS esgotadas)
                 if session.should_switch_rod_pair():
                     target_rod = session.get_next_pair_rod()
