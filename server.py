@@ -160,8 +160,8 @@ active_sessions: Dict[str, dict] = {}
 
 # Regras de configuração (retornadas para o cliente)
 DEFAULT_RULES = {
-    "feed_interval_fish": 1,       # Alimentar a cada 1 peixe
-    "clean_interval_fish": 2,      # Limpar a cada 2 peixes
+    "feed_interval_fish": 2,       # ✅ CORRIGIDO: Alimentar a cada 2 peixes
+    "clean_interval_fish": 1,      # ✅ CORRIGIDO: Limpar a cada 1 peixe
     "break_interval_fish": 50,     # Pausar a cada 50 peixes
     "break_duration_minutes": 45   # Duração do break
 }
@@ -179,12 +179,16 @@ class FishingSession:
         # Contadores
         self.fish_count = 0
 
+        # ✅ NOVO: Configurações do usuário (sincronizadas do cliente)
+        # Inicializa com DEFAULT_RULES, será sobrescrito quando cliente enviar configs
+        self.user_config = DEFAULT_RULES.copy()
+
         # ✅ Rod tracking multi-vara (sistema de 6 varas em 3 pares)
         self.rod_uses = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}  # Uso por vara
         self.current_rod = 1  # Vara atual em uso
         self.current_pair_index = 0  # Par atual (0=Par1, 1=Par2, 2=Par3)
         self.rod_pairs = [(1,2), (3,4), (5,6)]  # Pares de varas
-        self.use_limit = 20  # Limite de usos por vara antes de trocar par
+        self.use_limit = 20  # Limite de usos por vara (será atualizado por user_config)
 
         # Trackers de última ação
         self.last_clean_at = 0
@@ -197,6 +201,21 @@ class FishingSession:
         self.last_fish_time = None
 
         logger.info(f"🎣 Nova sessão criada para: {login}")
+
+    def update_config(self, config: dict):
+        """
+        ✅ NOVO: Atualizar configurações do usuário
+
+        Recebe configs do cliente e atualiza regras da sessão
+        """
+        self.user_config.update(config)
+
+        # Atualizar use_limit baseado em rod_switch_limit da config
+        if "rod_switch_limit" in config:
+            self.use_limit = config["rod_switch_limit"]
+            logger.info(f"⚙️ {self.login}: use_limit atualizado para {self.use_limit}")
+
+        logger.info(f"⚙️ {self.login}: Configurações atualizadas: {config}")
 
     def increment_fish(self):
         """Incrementar contador de peixes"""
@@ -211,7 +230,8 @@ class FishingSession:
     def should_feed(self) -> bool:
         """Regra: Alimentar a cada N peixes (protegida)"""
         peixes_desde_ultimo = self.fish_count - self.last_feed_at
-        should = peixes_desde_ultimo >= DEFAULT_RULES["feed_interval_fish"]
+        # ✅ USA user_config ao invés de DEFAULT_RULES
+        should = peixes_desde_ultimo >= self.user_config["feed_interval_fish"]
 
         if should:
             logger.info(f"🍖 {self.login}: Trigger de feeding ({peixes_desde_ultimo} peixes)")
@@ -222,7 +242,8 @@ class FishingSession:
     def should_clean(self) -> bool:
         """Regra: Limpar a cada N peixes (protegida)"""
         peixes_desde_ultimo = self.fish_count - self.last_clean_at
-        should = peixes_desde_ultimo >= DEFAULT_RULES["clean_interval_fish"]
+        # ✅ USA user_config ao invés de DEFAULT_RULES
+        should = peixes_desde_ultimo >= self.user_config["clean_interval_fish"]
 
         if should:
             logger.info(f"🧹 {self.login}: Trigger de cleaning ({peixes_desde_ultimo} peixes)")
@@ -235,8 +256,9 @@ class FishingSession:
         peixes_desde_ultimo = self.fish_count - self.last_break_at
         tempo_decorrido = (datetime.now() - self.session_start).seconds / 3600
 
+        # ✅ USA user_config ao invés de DEFAULT_RULES
         # Pausar a cada X peixes OU a cada Y horas
-        should = peixes_desde_ultimo >= DEFAULT_RULES["break_interval_fish"] or tempo_decorrido >= 2.0
+        should = peixes_desde_ultimo >= self.user_config["break_interval_fish"] or tempo_decorrido >= 2.0
 
         if should:
             logger.info(f"☕ {self.login}: Trigger de break ({peixes_desde_ultimo} peixes ou {tempo_decorrido:.1f}h)")
@@ -631,6 +653,22 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Enviar todos os comandos
                 for cmd in commands:
                     await websocket.send_json(cmd)
+
+            # ─────────────────────────────────────────────────
+            # ✅ NOVO: EVENTO: Sincronizar configurações do cliente
+            # ─────────────────────────────────────────────────
+            elif event == "sync_config":
+                # Receber configurações do cliente e atualizar sessão
+                config = msg.get("data", {})
+                session.update_config(config)
+
+                # Confirmar recebimento
+                await websocket.send_json({
+                    "type": "config_synced",
+                    "message": "Configurações atualizadas no servidor!",
+                    "config": session.user_config
+                })
+                logger.info(f"⚙️ {login}: Configurações sincronizadas com sucesso")
 
             # ─────────────────────────────────────────────────
             # ✅ NOVO: EVENTO: Template detectado (coordenadas)
