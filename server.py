@@ -569,7 +569,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         ]
                     }
 
-                    session.fed()  # Marcar que alimentou
+                    # Nota: last_feed_at já foi atualizado em should_feed()
 
                 # LIMPEZA: Detectou item no inventário para limpar
                 elif template_name in ["item_trash", "inventory_item"] and session.should_clean():
@@ -587,7 +587,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         ]
                     }
 
-                    session.cleaned()  # Marcar que limpou
+                    # Nota: last_clean_at já foi atualizado em should_clean()
 
                 # MANUTENÇÃO DE VARAS: Detectou vara quebrada
                 elif template_name == "varaquebrada":
