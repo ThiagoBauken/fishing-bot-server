@@ -23,8 +23,8 @@ import logging
 import requests
 import os
 
-# ✅ CORREÇÃO: ActionBuilder não está sendo usado no código atual
-# from action_builder import ActionBuilder  # ← Comentado (não necessário para funcionamento)
+# ✅ NOVO: Import do ActionSequenceBuilder para construir sequências
+from action_sequences import ActionSequenceBuilder
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -190,6 +190,10 @@ class FishingSession:
         self.rod_pairs = [(1,2), (3,4), (5,6)]  # Pares de varas
         self.use_limit = 20  # Limite de usos por vara (será atualizado por user_config)
 
+        # ✅ NOVO: Timeout tracking por vara (para limpeza automática)
+        self.rod_timeout_history = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}  # Timeouts consecutivos por vara
+        self.total_timeouts = 0  # Total de timeouts (estatística)
+
         # Trackers de última ação
         self.last_clean_at = 0
         self.last_feed_at = 0
@@ -222,6 +226,58 @@ class FishingSession:
         self.fish_count += 1
         self.last_fish_time = datetime.now()
         logger.info(f"🐟 {self.login}: Peixe #{self.fish_count} capturado!")
+
+    def increment_timeout(self, current_rod: int):
+        """
+        ✅ NOVO: Incrementar contador de timeout para vara específica
+
+        Args:
+            current_rod: Número da vara que teve timeout (1-6)
+        """
+        if current_rod not in self.rod_timeout_history:
+            self.rod_timeout_history[current_rod] = 0
+
+        self.rod_timeout_history[current_rod] += 1
+        self.total_timeouts += 1
+
+        logger.info(f"⏰ {self.login}: Timeout #{self.total_timeouts} - Vara {current_rod}: {self.rod_timeout_history[current_rod]} timeout(s) consecutivo(s)")
+
+    def reset_timeout(self, current_rod: int):
+        """
+        ✅ NOVO: Resetar contador de timeout quando peixe é capturado
+
+        Args:
+            current_rod: Número da vara que capturou peixe (1-6)
+        """
+        if current_rod in self.rod_timeout_history:
+            old_count = self.rod_timeout_history[current_rod]
+            self.rod_timeout_history[current_rod] = 0
+            if old_count > 0:
+                logger.info(f"🎣 {self.login}: Vara {current_rod} - timeouts resetados ({old_count} → 0)")
+
+    def should_clean_by_timeout(self, current_rod: int) -> bool:
+        """
+        ✅ NOVO: Verificar se deve limpar por timeout
+
+        Regra: Limpar quando vara atinge maintenance_timeout timeouts consecutivos
+
+        Args:
+            current_rod: Número da vara que teve timeout (1-6)
+
+        Returns:
+            bool: True se deve limpar
+        """
+        maintenance_timeout_limit = self.user_config.get("maintenance_timeout", 3)
+        timeouts = self.rod_timeout_history.get(current_rod, 0)
+
+        should = timeouts >= maintenance_timeout_limit
+
+        if should:
+            logger.info(f"🧹 {self.login}: Trigger de limpeza por timeout (vara {current_rod}: {timeouts}/{maintenance_timeout_limit} timeouts)")
+            # Resetar contador após trigger
+            self.rod_timeout_history[current_rod] = 0
+
+        return should
 
     # ─────────────────────────────────────────────────────────────
     # 🔒 LÓGICA PROTEGIDA - REGRAS DE DECISÃO (NINGUÉM VÊ ISSO!)
@@ -587,6 +643,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 # ✅ NOVO: Incrementar uso da vara atual
                 session.increment_rod_use(current_rod)
 
+                # ✅ NOVO: Resetar timeout da vara (peixe capturado = vara funcionando)
+                session.reset_timeout(current_rod)
+
                 # ═════════════════════════════════════════════════════════════
                 # 🔒 LÓGICA DE DECISÃO - TODA PROTEGIDA NO SERVIDOR!
                 # ═════════════════════════════════════════════════════════════
@@ -606,29 +665,20 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # 🍖 PRIORIDADE 2: Alimentar (a cada N peixes)
                 if session.should_feed():
-                    commands.append({"cmd": "feed", "params": {"clicks": 5}})
-                    logger.info(f"🍖 {login}: Comando FEED enviado")
+                    # Solicitar detecção de comida e botão eat
+                    commands.append({
+                        "cmd": "request_template_detection",
+                        "templates": ["filefrito", "eat"]
+                    })
+                    logger.info(f"🍖 {login}: Solicitando detecção de comida (feeding)")
 
                 # 🧹 PRIORIDADE 3: Limpar (a cada N peixes)
                 if session.should_clean():
+                    # Solicitar scan de inventário
                     commands.append({
-                        "cmd": "clean",
-                        "params": {
-                            # Coordenadas do chest (PROTEGIDAS no servidor!)
-                            "chest_x": 1400,
-                            "chest_y": 500,
-                            # Área de scan do inventário
-                            "inventory_area": {
-                                "x1": 633,   # inventory_area[0]
-                                "y1": 541,   # inventory_area[1]
-                                "x2": 1233,  # inventory_area[2]
-                                "y2": 953    # inventory_area[3]
-                            },
-                            # Coordenadas do divisor (esquerda=inventory, direita=chest)
-                            "divider_x": 1243
-                        }
+                        "cmd": "request_inventory_scan"
                     })
-                    logger.info(f"🧹 {login}: Comando CLEAN enviado (com coordenadas do chest)")
+                    logger.info(f"🧹 {login}: Solicitando scan de inventário (cleaning)")
 
                 # ☕ PRIORIDADE 4: Pausar (a cada N peixes ou tempo)
                 if session.should_break():
@@ -671,79 +721,146 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.info(f"⚙️ {login}: Configurações sincronizadas com sucesso")
 
             # ─────────────────────────────────────────────────
-            # ✅ NOVO: EVENTO: Template detectado (coordenadas)
+            # ✅ NOVO: EVENTO: Timeout (ciclo sem peixe)
             # ─────────────────────────────────────────────────
-            elif event == "template_detected":
-                # Extrair dados da detecção
+            elif event == "timeout":
+                # Extrair dados do timeout
                 data = msg.get("data", {})
-                template_name = data.get("template")
-                location = data.get("location", {})
-                x = location.get("x")
-                y = location.get("y")
+                current_rod = data.get("current_rod", 1)
 
-                logger.info(f"👁️  {login}: Detecção recebida - {template_name} em ({x}, {y})")
+                # Incrementar contador de timeout
+                session.increment_timeout(current_rod)
 
-                # ═════════════════════════════════════════════════════════════
-                # 🧠 ANÁLISE DE CONTEXTO - SERVIDOR DECIDE O QUE FAZER
-                # ═════════════════════════════════════════════════════════════
+                # Verificar se precisa limpar por timeout
+                if session.should_clean_by_timeout(current_rod):
+                    # Enviar comando de limpeza
+                    await websocket.send_json({
+                        "cmd": "clean",
+                        "params": {
+                            # Coordenadas do chest (PROTEGIDAS no servidor!)
+                            "chest_x": 1400,
+                            "chest_y": 500,
+                            # Área de scan do inventário
+                            "inventory_area": {
+                                "x1": 633,
+                                "y1": 541,
+                                "x2": 1233,
+                                "y2": 953
+                            },
+                            # Coordenadas do divisor (esquerda=inventory, direita=chest)
+                            "divider_x": 1243
+                        }
+                    })
+                    logger.info(f"🧹 {login}: Comando CLEAN enviado (trigger: timeout vara {current_rod})")
 
-                command = None
+            # ─────────────────────────────────────────────────
+            # ✅ NOVO: EVENTO: Feeding locations detected
+            # ─────────────────────────────────────────────────
+            elif event == "feeding_locations_detected":
+                data = msg.get("data", {})
+                food_location = data.get("food_location")
+                eat_location = data.get("eat_location")
 
-                # ALIMENTAÇÃO: Detectou botão "eat" ou "filefrito"
-                if template_name in ["eat_button", "eat", "filefrito"] and session.should_feed():
-                    logger.info(f"🧠 {login}: Servidor decidiu ALIMENTAR (fish_count={session.fish_count})")
+                logger.info(f"🍖 {login}: Localizações de feeding recebidas")
+                logger.info(f"   Food: {food_location}, Eat: {eat_location}")
 
-                    # Servidor decide TUDO: quantos cliques, intervalo, sequência
-                    command = {
-                        "cmd": "sequence",
-                        "actions": [
-                            {"cmd": "move", "x": x, "y": y},
-                            {"cmd": "wait", "duration": 0.2},
-                            {"cmd": "click", "button": "left", "repeat": 5, "interval": 0.3},
-                            {"cmd": "wait", "duration": 1.0}
-                        ]
-                    }
+                # Criar ActionSequenceBuilder com config do usuário
+                builder = ActionSequenceBuilder(session.user_config)
 
-                    # Nota: last_feed_at já foi atualizado em should_feed()
+                # Construir sequência completa de alimentação
+                sequence = builder.build_feeding_sequence(food_location, eat_location)
 
-                # LIMPEZA: Detectou item no inventário para limpar
-                elif template_name in ["item_trash", "inventory_item"] and session.should_clean():
-                    logger.info(f"🧠 {login}: Servidor decidiu LIMPAR (fish_count={session.fish_count})")
+                # Enviar sequência para cliente executar
+                await websocket.send_json({
+                    "cmd": "execute_sequence",
+                    "actions": sequence,
+                    "operation": "feeding"
+                })
 
-                    # Servidor decide SEQUÊNCIA completa de arrastar itens
-                    # Coordenadas do chest são protegidas no servidor!
-                    chest_x, chest_y = 1400, 500  # Coordenada do chest (protegida!)
+                logger.info(f"✅ {login}: Sequência de feeding enviada ({len(sequence)} ações)")
 
-                    command = {
-                        "cmd": "sequence",
-                        "actions": [
-                            {"cmd": "drag", "start_x": x, "start_y": y, "end_x": chest_x, "end_y": chest_y, "duration": 1.0},
-                            {"cmd": "wait", "duration": 0.5}
-                        ]
-                    }
+            # ─────────────────────────────────────────────────
+            # ✅ NOVO: EVENTO: Fish locations detected
+            # ─────────────────────────────────────────────────
+            elif event == "fish_locations_detected":
+                data = msg.get("data", {})
+                fish_locations = data.get("fish_locations", [])
 
-                    # Nota: last_clean_at já foi atualizado em should_clean()
+                logger.info(f"🐟 {login}: {len(fish_locations)} peixes detectados")
 
-                # MANUTENÇÃO DE VARAS: Detectou vara quebrada
-                elif template_name == "varaquebrada":
-                    logger.info(f"🧠 {login}: Servidor decidiu TROCAR VARA (quebrada detectada)")
+                # Criar ActionSequenceBuilder
+                builder = ActionSequenceBuilder(session.user_config)
 
-                    # Servidor decide SEQUÊNCIA completa: abrir baú, pegar vara, trocar
-                    command = {
-                        "cmd": "sequence",
-                        "actions": [
-                            {"cmd": "key_press", "key": "e", "duration": 0.1},  # Abrir baú
-                            {"cmd": "wait", "duration": 1.0},
-                            # ... mais ações conforme necessário
-                        ]
-                    }
+                # Construir sequência completa de limpeza
+                sequence = builder.build_cleaning_sequence(fish_locations)
 
-                # Se servidor decidiu fazer algo, enviar comando
-                if command:
-                    await websocket.send_json(command)
-                    logger.info(f"✅ {login}: Comando enviado ao cliente")
-                else:
-                    logger.debug(f"ℹ️  {login}: Servidor decidiu NÃO fazer nada com {template_name}")
+                # Enviar sequência para cliente executar
+                await websocket.send_json({
+                    "cmd": "execute_sequence",
+                    "actions": sequence,
+                    "operation": "cleaning"
+                })
+
+                logger.info(f"✅ {login}: Sequência de cleaning enviada ({len(sequence)} ações)")
+
+            # ─────────────────────────────────────────────────
+            # ✅ NOVO: EVENTO: Rod status detected
+            # ─────────────────────────────────────────────────
+            elif event == "rod_status_detected":
+                data = msg.get("data", {})
+                rod_status = data.get("rod_status", {})
+                available_items = data.get("available_items", {})
+
+                logger.info(f"🎣 {login}: Status das varas recebido")
+                logger.info(f"   Status: {rod_status}")
+                logger.info(f"   Varas disponíveis: {len(available_items.get('rods', []))}")
+                logger.info(f"   Iscas disponíveis: {len(available_items.get('baits', []))}")
+
+                # Criar ActionSequenceBuilder
+                builder = ActionSequenceBuilder(session.user_config)
+
+                # Construir sequência completa de manutenção
+                sequence = builder.build_maintenance_sequence(rod_status, available_items)
+
+                # Enviar sequência para cliente executar
+                await websocket.send_json({
+                    "cmd": "execute_sequence",
+                    "actions": sequence,
+                    "operation": "maintenance"
+                })
+
+                logger.info(f"✅ {login}: Sequência de maintenance enviada ({len(sequence)} ações)")
+
+            # ─────────────────────────────────────────────────
+            # ✅ NOVO: EVENTO: Sequence completed
+            # ─────────────────────────────────────────────────
+            elif event == "sequence_completed":
+                data = msg.get("data", {})
+                operation = data.get("operation", "unknown")
+
+                logger.info(f"✅ {login}: Sequência {operation} concluída com sucesso")
+
+                # Atualizar contadores de sessão
+                if operation == "feeding":
+                    session.last_feed_at = session.fish_count
+                elif operation == "cleaning":
+                    session.last_clean_at = session.fish_count
+
+            # ─────────────────────────────────────────────────
+            # ✅ NOVO: EVENTO: Sequence failed
+            # ─────────────────────────────────────────────────
+            elif event == "sequence_failed":
+                data = msg.get("data", {})
+                operation = data.get("operation", "unknown")
+                step_index = data.get("step_index", 0)
+                error = data.get("error", "")
+
+                logger.error(f"❌ {login}: Sequência {operation} falhou no step {step_index}: {error}")
+
+                # TODO: Decidir o que fazer em caso de falha
+                # - Retry?
+                # - Abortar?
+                # - Notificar usuário?
 
             # ─────────────────────────────────────────────────
             # EVENTO: Feeding concluído
