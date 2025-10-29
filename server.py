@@ -23,8 +23,8 @@ import logging
 import requests
 import os
 
-# Importar ActionBuilder
-from action_builder import ActionBuilder
+# ✅ CORREÇÃO: ActionBuilder não está sendo usado no código atual
+# from action_builder import ActionBuilder  # ← Comentado (não necessário para funcionamento)
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
