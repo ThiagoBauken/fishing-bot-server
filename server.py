@@ -22,6 +22,10 @@ from typing import Dict
 import logging
 import requests
 import os
+import sys
+
+# Adicionar diretório do script ao path (para imports locais)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ✅ NOVO: Import do ActionSequenceBuilder para construir sequências
 from action_sequences import ActionSequenceBuilder
