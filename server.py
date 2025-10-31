@@ -888,8 +888,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.info(f"🔧 {login}: Operação MAINTENANCE adicionada ao batch ({', '.join(reason)})")
 
                 # 🧹 PRIORIDADE 3: Limpar (a cada N peixes) - DEPOIS DA MANUTENÇÃO
-                logger.info(f"🔍 {login}: DEBUG - Verificando should_clean()...")
-                if session.should_clean():
+                # ✅ USAR will_clean (já calculado acima) ao invés de chamar should_clean() novamente!
+                # Chamar should_clean() duas vezes causa BUG pois ela modifica last_clean_at na primeira chamada!
+                logger.info(f"🔍 {login}: DEBUG - Verificando will_clean (já calculado)...")
+                if will_clean:
                     operations.append({
                         "type": "cleaning",
                         "params": {
