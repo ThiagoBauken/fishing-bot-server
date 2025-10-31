@@ -570,11 +570,13 @@ class ActionSequenceBuilder:
 
         # Obter prioridade do config (ou usar default)
         bait_priority = self.config.get("bait_priority", {
-            "carneurso": 1,
-            "carnedelobo": 2,
-            "TROUTT": 3,
-            "grub": 4,
-            "minhoca": 5
+            "crocodilo": 1,
+            "carneurso": 2,
+            "carnedelobo": 3,
+            "bigcat": 4,
+            "TROUTT": 5,
+            "grub": 6,
+            "minhoca": 7
         })
 
         # Ordenar iscas por prioridade (menor número = melhor)

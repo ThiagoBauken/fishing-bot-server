@@ -852,7 +852,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     logger.info(f"🍖 {login}: Operação FEEDING adicionada ao batch")
 
-                # 🧹 PRIORIDADE 2: Limpar (a cada N peixes)
+                # 🎣 PRIORIDADE 2: Trocar par de varas (se AMBAS esgotadas) - ANTES DA LIMPEZA
+                if session.should_switch_rod_pair():
+                    target_rod = session.get_next_pair_rod()
+                    operations.append({
+                        "type": "switch_rod_pair",
+                        "params": {
+                            "target_rod": target_rod
+                        }
+                    })
+                    logger.info(f"🎣 {login}: Operação SWITCH_ROD_PAIR adicionada ao batch (→ Vara {target_rod})")
+
+                # 🧹 PRIORIDADE 3: Limpar (a cada N peixes) - DEPOIS DA MANUTENÇÃO
                 logger.info(f"🔍 {login}: DEBUG - Verificando should_clean()...")
                 if session.should_clean():
                     operations.append({
@@ -863,7 +874,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     logger.info(f"🧹 {login}: Operação CLEANING adicionada ao batch")
 
-                # 🔄 PRIORIDADE 2.5: Trocar vara dentro do par (SEMPRE após pescar)
+                # 🔄 PRIORIDADE 4: Trocar vara dentro do par (SEMPRE após pescar)
                 # ✅ CORREÇÃO: Cliente NÃO decide mais - servidor envia comando!
                 # Regra: Trocar vara a cada peixe (vara 1 → vara 2 → vara 1 → ...)
                 logger.info(f"🔍 {login}: DEBUG - Adicionando switch_rod (sempre executado)...")
@@ -874,17 +885,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     }
                 })
                 logger.info(f"🔄 {login}: Operação SWITCH_ROD adicionada ao batch (troca no par)")
-
-                # 🎣 PRIORIDADE 3: Trocar par de varas (se AMBAS esgotadas)
-                if session.should_switch_rod_pair():
-                    target_rod = session.get_next_pair_rod()
-                    operations.append({
-                        "type": "switch_rod_pair",
-                        "params": {
-                            "target_rod": target_rod
-                        }
-                    })
-                    logger.info(f"🎣 {login}: Operação SWITCH_ROD_PAIR adicionada ao batch (→ Vara {target_rod})")
 
                 # ☕ PRIORIDADE 4: Pausar (a cada N peixes ou tempo)
                 if session.should_break():
