@@ -852,7 +852,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     logger.info(f"🍖 {login}: Operação FEEDING adicionada ao batch")
 
-                # 🎣 PRIORIDADE 2: Trocar par de varas (se AMBAS esgotadas) - ANTES DA LIMPEZA
+                # 🎣 PRIORIDADE 2: Trocar par de varas (se AMBAS esgotadas)
                 if session.should_switch_rod_pair():
                     target_rod = session.get_next_pair_rod()
                     operations.append({
@@ -862,6 +862,22 @@ async def websocket_endpoint(websocket: WebSocket):
                         }
                     })
                     logger.info(f"🎣 {login}: Operação SWITCH_ROD_PAIR adicionada ao batch (→ Vara {target_rod})")
+
+                # 🔧 PRIORIDADE 2.5: Manutenção de varas (verificar se precisa)
+                # ✅ CORREÇÃO: Manutenção ANTES da limpeza
+                maintenance_timeout_limit = session.user_config.get("maintenance_timeout", 3)
+                needs_maintenance = False
+                for rod, timeouts in session.rod_timeout_history.items():
+                    if timeouts >= 1:  # Qualquer timeout já dispara verificação
+                        needs_maintenance = True
+                        break
+
+                if needs_maintenance:
+                    operations.append({
+                        "type": "maintenance",
+                        "params": {}
+                    })
+                    logger.info(f"🔧 {login}: Operação MAINTENANCE adicionada ao batch")
 
                 # 🧹 PRIORIDADE 3: Limpar (a cada N peixes) - DEPOIS DA MANUTENÇÃO
                 logger.info(f"🔍 {login}: DEBUG - Verificando should_clean()...")
