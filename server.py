@@ -836,9 +836,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 # 🔒 LÓGICA DE DECISÃO - TODA PROTEGIDA NO SERVIDOR!
                 # ✅ NOVA ARQUITETURA: Coletar operações e enviar em BATCH
                 # ═════════════════════════════════════════════════════════════
+                logger.info(f"🔍 {login}: DEBUG - Iniciando construção do batch de operações")
                 operations = []
 
                 # 🍖 PRIORIDADE 1: Alimentar (a cada N peixes)
+                logger.info(f"🔍 {login}: DEBUG - Verificando should_feed()...")
                 if session.should_feed():
                     operations.append({
                         "type": "feeding",
@@ -851,6 +853,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.info(f"🍖 {login}: Operação FEEDING adicionada ao batch")
 
                 # 🧹 PRIORIDADE 2: Limpar (a cada N peixes)
+                logger.info(f"🔍 {login}: DEBUG - Verificando should_clean()...")
                 if session.should_clean():
                     operations.append({
                         "type": "cleaning",
@@ -863,6 +866,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 # 🔄 PRIORIDADE 2.5: Trocar vara dentro do par (SEMPRE após pescar)
                 # ✅ CORREÇÃO: Cliente NÃO decide mais - servidor envia comando!
                 # Regra: Trocar vara a cada peixe (vara 1 → vara 2 → vara 1 → ...)
+                logger.info(f"🔍 {login}: DEBUG - Adicionando switch_rod (sempre executado)...")
                 operations.append({
                     "type": "switch_rod",
                     "params": {
@@ -908,12 +912,25 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.info(f"🎲 {login}: Operação ADJUST_TIMING adicionada ao batch")
 
                 # ✅ ENVIAR BATCH ÚNICO (ao invés de comandos separados)
+                logger.info(f"🔍 {login}: DEBUG - Verificando operations list: {len(operations)} operações")
                 if operations:
-                    await websocket.send_json({
-                        "cmd": "execute_batch",
-                        "operations": operations
-                    })
-                    logger.info(f"📦 {login}: BATCH enviado com {len(operations)} operação(ões): {[op['type'] for op in operations]}")
+                    try:
+                        logger.info(f"📤 {login}: DEBUG - Preparando envio do batch...")
+                        batch_message = {
+                            "cmd": "execute_batch",
+                            "operations": operations
+                        }
+                        logger.info(f"📤 {login}: DEBUG - Mensagem preparada: {batch_message}")
+
+                        await websocket.send_json(batch_message)
+
+                        logger.info(f"📦 {login}: ✅ BATCH enviado com {len(operations)} operação(ões): {[op['type'] for op in operations]}")
+                    except Exception as e:
+                        logger.error(f"❌ {login}: ERRO ao enviar batch: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    logger.warning(f"⚠️ {login}: Nenhuma operação no batch (não deveria acontecer!)")
 
             # ─────────────────────────────────────────────────
             # ✅ NOVO: EVENTO: Sincronizar configurações do cliente
