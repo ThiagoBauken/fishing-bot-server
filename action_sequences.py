@@ -571,9 +571,9 @@ class ActionSequenceBuilder:
         # Obter prioridade do config (ou usar default)
         bait_priority = self.config.get("bait_priority", {
             "crocodilo": 1,
-            "carneurso": 2,
-            "carnedelobo": 3,
-            "bigcat": 4,
+            "bigcat": 2,
+            "carneurso": 3,
+            "carnedelobo": 4,
             "TROUTT": 5,
             "grub": 6,
             "minhoca": 7
