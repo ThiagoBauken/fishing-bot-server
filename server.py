@@ -863,21 +863,29 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     logger.info(f"🎣 {login}: Operação SWITCH_ROD_PAIR adicionada ao batch (→ Vara {target_rod})")
 
-                # 🔧 PRIORIDADE 2.5: Manutenção de varas (verificar se precisa)
-                # ✅ CORREÇÃO: Manutenção ANTES da limpeza
-                maintenance_timeout_limit = session.user_config.get("maintenance_timeout", 3)
-                needs_maintenance = False
-                for rod, timeouts in session.rod_timeout_history.items():
-                    if timeouts >= 1:  # Qualquer timeout já dispara verificação
-                        needs_maintenance = True
-                        break
+                # 🔧 PRIORIDADE 2.5: Manutenção de varas
+                # ✅ REGRA: Executar manutenção SE:
+                #    1. Houve FEEDING (acabou de comer - verificar vara)
+                #    2. Houve TIMEOUT (vara pode estar quebrada/sem isca)
+                #    3. Vai fazer CLEANING (verificar antes de limpar)
+                has_feeding = any(op["type"] == "feeding" for op in operations)
+                will_clean = session.should_clean()
+                has_timeout = any(session.rod_timeout_history.get(r, 0) >= 1 for r in session.rod_timeout_history)
 
-                if needs_maintenance:
+                # Executar manutenção se qualquer condição for verdadeira
+                if has_feeding or will_clean or has_timeout:
                     operations.append({
                         "type": "maintenance",
                         "params": {}
                     })
-                    logger.info(f"🔧 {login}: Operação MAINTENANCE adicionada ao batch")
+                    reason = []
+                    if has_feeding:
+                        reason.append("após feeding")
+                    if has_timeout:
+                        reason.append("timeout detectado")
+                    if will_clean:
+                        reason.append("antes cleaning")
+                    logger.info(f"🔧 {login}: Operação MAINTENANCE adicionada ao batch ({', '.join(reason)})")
 
                 # 🧹 PRIORIDADE 3: Limpar (a cada N peixes) - DEPOIS DA MANUTENÇÃO
                 logger.info(f"🔍 {login}: DEBUG - Verificando should_clean()...")
@@ -977,20 +985,23 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # Verificar se precisa limpar por timeout
                 if session.should_clean_by_timeout(current_rod):
-                    # ✅ NOVO: Usar fluxo de batch (igual fish_caught)
-                    # Timeout = limpar + verificar manutenção de varas
+                    # ✅ ORDEM CORRETA: FEEDING → MAINTENANCE → CLEANING
+                    # Timeout = verificar feeding + verificar vara + limpar inventário
                     operations = []
 
-                    # 🧹 SEMPRE adicionar cleaning (timeout trigger)
-                    operations.append({
-                        "type": "cleaning",
-                        "params": {
-                            "fish_templates": ["SALMONN", "shark", "herring", "anchovies", "trout"]
-                        }
-                    })
-                    logger.info(f"🧹 {login}: Operação CLEANING adicionada ao batch (timeout vara {current_rod})")
+                    # 🍖 PRIORIDADE 1: Verificar se precisa alimentar
+                    if session.should_feed():
+                        operations.append({
+                            "type": "feeding",
+                            "params": {
+                                "feeds_per_session": 2,
+                                "food_template": "filefrito",
+                                "eat_template": "eat"
+                            }
+                        })
+                        logger.info(f"🍖 {login}: Operação FEEDING adicionada ao batch (timeout)")
 
-                    # 🔧 TAMBÉM adicionar maintenance (verificar vara quebrada/sem isca)
+                    # 🔧 PRIORIDADE 2: SEMPRE verificar manutenção de vara (pode estar quebrada/sem isca)
                     operations.append({
                         "type": "maintenance",
                         "params": {
@@ -998,6 +1009,15 @@ async def websocket_endpoint(websocket: WebSocket):
                         }
                     })
                     logger.info(f"🔧 {login}: Operação MAINTENANCE adicionada ao batch (verificar vara {current_rod})")
+
+                    # 🧹 PRIORIDADE 3: Limpar inventário (DEPOIS da manutenção)
+                    operations.append({
+                        "type": "cleaning",
+                        "params": {
+                            "fish_templates": ["SALMONN", "shark", "herring", "anchovies", "trout"]
+                        }
+                    })
+                    logger.info(f"🧹 {login}: Operação CLEANING adicionada ao batch (timeout vara {current_rod})")
 
                     # ✅ ENVIAR BATCH
                     await websocket.send_json({
