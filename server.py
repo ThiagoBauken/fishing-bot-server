@@ -26,6 +26,14 @@ import sys
 import queue  # ✅ CORREÇÃO #9: Para DatabasePool
 import threading  # ✅ CORREÇÃO #6 e #9: Para locks e pool
 
+# ✅ CORREÇÃO CRÍTICA: Carregar variáveis de ambiente do arquivo .env
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ Variáveis de ambiente carregadas do arquivo .env")
+except ImportError:
+    print("⚠️ python-dotenv não instalado - usando variáveis de ambiente do sistema")
+
 # Adicionar diretório do script ao path (para imports locais)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
@@ -90,16 +98,27 @@ def validate_with_keymaster(license_key: str, hwid: str) -> dict:
     """
     try:
         logger.info(f"🔍 Validando com Keymaster: {license_key[:10]}...")
+        logger.info(f"📋 Configurações:")
+        logger.info(f"   KEYMASTER_URL: {KEYMASTER_URL}")
+        logger.info(f"   PROJECT_ID: {PROJECT_ID}")
+        logger.info(f"   HWID: {hwid[:16]}...")
+
+        payload = {
+            "activation_key": license_key,
+            "hardware_id": hwid,
+            "project_id": PROJECT_ID
+        }
+
+        logger.info(f"📤 Payload sendo enviado: {json.dumps(payload, indent=2)}")
 
         response = requests.post(
             f"{KEYMASTER_URL}/validate",
-            json={
-                "activation_key": license_key,
-                "hardware_id": hwid,
-                "project_id": PROJECT_ID
-            },
+            json=payload,
             timeout=10
         )
+
+        logger.info(f"📥 Response Status: {response.status_code}")
+        logger.info(f"📥 Response Body: {response.text[:500]}...")
 
         if response.status_code == 200:
             data = response.json()

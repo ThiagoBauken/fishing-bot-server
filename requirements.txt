@@ -18,6 +18,9 @@ python-multipart==0.0.6
 # HTTP Requests (para Keymaster integration)
 requests==2.31.0
 
+# ✅ CORREÇÃO: Carregar variáveis de ambiente do arquivo .env
+python-dotenv==1.0.0
+
 # Logging (built-in, mas listando para referência)
 # logging (incluído no Python)
 
