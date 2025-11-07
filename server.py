@@ -14,6 +14,7 @@ Cliente apenas EXECUTA cegamente
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 import json
 import sqlite3
 import asyncio
@@ -57,11 +58,52 @@ KEYMASTER_URL = os.getenv("KEYMASTER_URL", "https://private-keygen.pbzgje.easypa
 PROJECT_ID = os.getenv("PROJECT_ID", "67a4a76a-d71b-4d07-9ba8-f7e794ce0578")
 PORT = int(os.getenv("PORT", "8122"))
 
+# ═══════════════════════════════════════════════════════
+# LIFESPAN (Gerenciador de ciclo de vida do servidor)
+# ═══════════════════════════════════════════════════════
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Gerenciador de ciclo de vida do servidor"""
+
+    # ═══════ STARTUP ═══════
+    logger.info("="*60)
+    logger.info("🚀 Fishing Bot Server iniciando...")
+    logger.info("="*60)
+    logger.info("✅ Servidor pronto para aceitar conexões!")
+    logger.info("📊 Usuários ativos: 0")
+    logger.info("="*60)
+
+    yield  # ← Servidor roda aqui
+
+    # ═══════ SHUTDOWN ═══════
+    logger.info("🛑 Encerrando servidor...")
+
+    # Fechar todas as conexões (thread-safe)
+    async with sessions_lock:
+        sessions_to_close = list(active_sessions.items())
+
+    for email, data in sessions_to_close:
+        try:
+            # ✅ CORREÇÃO #3: Cleanup de cada sessão
+            if "session" in data:
+                data["session"].cleanup()
+            await data["websocket"].close()
+        except:
+            pass
+
+    # ✅ CORREÇÃO #9: Fechar pool de conexões do banco
+    db_pool.close_all()
+    logger.info("✅ Database pool fechado")
+
+    logger.info("✅ Servidor encerrado")
+
 # FastAPI app
 app = FastAPI(
     title="Fishing Bot Server",
     description="Servidor multi-usuário para Fishing Bot",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # CORS (permite conexões de qualquer origem)
@@ -755,39 +797,88 @@ async def websocket_endpoint(websocket: WebSocket):
     Cliente mantém conexão ativa para validar que ainda está licenciado.
     NÃO envia fish_caught - cliente executa tudo localmente!
     """
-    await websocket.accept()
+    # ✅ LOG: Nova conexão chegando
+    logger.info(f"🔵 Nova conexão WebSocket de {websocket.client}")
+
     token = None
     license_key = None
 
     try:
-        # 1. AUTENTICAÇÃO
-        auth_msg = await websocket.receive_json()
-        token = auth_msg.get("token")
+        # ✅ LOG: Aceitando conexão
+        await websocket.accept()
+        logger.info(f"✅ WebSocket aceito: {websocket.client}")
 
+        # 1. AUTENTICAÇÃO COM TIMEOUT
+        # ✅ LOG: Aguardando autenticação
+        logger.info(f"⏳ Aguardando autenticação de {websocket.client}...")
+
+        try:
+            # ✅ TIMEOUT: 10 segundos (aumentado de sem timeout para 10s)
+            auth_msg = await asyncio.wait_for(
+                websocket.receive_json(),
+                timeout=10.0
+            )
+            logger.info(f"📥 Dados de autenticação recebidos de {websocket.client}")
+        except asyncio.TimeoutError:
+            # ✅ LOG: Timeout detalhado
+            logger.error(f"❌ Timeout aguardando autenticação de {websocket.client} (10s)")
+            await websocket.send_json({"error": "Timeout na autenticação"})
+            await websocket.close()
+            return
+
+        token = auth_msg.get("token")
+        logger.info(f"🔑 Token recebido: {token[:20] if token else 'None'}...")
+
+        # ✅ LOG: Validação de token vazio
         if not token:
+            logger.error(f"❌ Token vazio recebido de {websocket.client}")
             await websocket.send_json({"error": "Token inválido"})
             await websocket.close()
             return
 
         # Extrair license_key do token (formato: license_key:hwid_prefix)
         license_key = token.split(":")[0] if ":" in token else token
+        hwid_prefix = token.split(":")[1] if ":" in token and len(token.split(":")) > 1 else "N/A"
+        logger.info(f"🔍 Validando token...")
+        logger.info(f"   License: {license_key[:10]}...")
+        logger.info(f"   HWID: {hwid_prefix}...")
 
         # 2. VALIDAR TOKEN (verificar HWID binding)
         # ✅ CORREÇÃO #9: Usar pool de conexões (read para SELECT apenas)
         with db_pool.get_read_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT login, pc_name FROM hwid_bindings WHERE license_key=?", (license_key,))
+            cursor.execute("SELECT login, pc_name, hwid FROM hwid_bindings WHERE license_key=?", (license_key,))
             binding = cursor.fetchone()
 
+        # ✅ LOG: Resultado da validação
         if not binding:
+            logger.error(f"❌ License não encontrada no banco: {license_key[:10]}...")
             await websocket.send_json({"error": "Token inválido ou licença não vinculada"})
             await websocket.close()
             return
 
-        login, pc_name = binding
+        login, pc_name, stored_hwid = binding
+        stored_hwid_prefix = stored_hwid[:16] if stored_hwid else "N/A"
+
+        logger.info(f"✅ Token válido!")
+        logger.info(f"   Login: {login}")
+        logger.info(f"   PC: {pc_name or 'N/A'}")
+        logger.info(f"   HWID stored: {stored_hwid_prefix}")
+        logger.info(f"   HWID token: {hwid_prefix}")
+
+        # ✅ VALIDAÇÃO ADICIONAL: Verificar se HWID corresponde
+        if hwid_prefix != "N/A" and stored_hwid_prefix != "N/A":
+            if hwid_prefix != stored_hwid_prefix:
+                logger.error(f"❌ HWID não corresponde!")
+                logger.error(f"   Esperado: {stored_hwid_prefix}")
+                logger.error(f"   Recebido: {hwid_prefix}")
+                await websocket.send_json({"error": "HWID não corresponde"})
+                await websocket.close()
+                return
 
         # 3. CRIAR FISHING SESSION (mantém fish_count e decide ações)
         session = FishingSession(login)
+        logger.info(f"🎣 Sessão criada para {login}")
 
         # 4. REGISTRAR SESSÃO ATIVA (thread-safe)
         async with sessions_lock:
@@ -800,6 +891,7 @@ async def websocket_endpoint(websocket: WebSocket):
             }
 
         logger.info(f"🟢 Cliente conectado: {login} (PC: {pc_name})")
+        logger.info(f"📊 Total de usuários ativos: {len(active_sessions)}")
 
         # Enviar confirmação + fish_count atual
         await websocket.send_json({
@@ -807,6 +899,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "message": "Conectado ao servidor!",
             "fish_count": session.fish_count  # ✅ Enviar fish_count
         })
+        logger.info(f"✅ Confirmação de conexão enviada para {login}")
 
         # 5. LOOP DE MENSAGENS
         while True:
@@ -1178,10 +1271,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"type": "pong"})
 
     except WebSocketDisconnect:
-        logger.info(f"🔴 Cliente desconectado: {license_key or 'desconhecido'}")
+        # ✅ LOG: Desconexão detalhada
+        user_info = f"{license_key or 'desconhecido'}"
+        if license_key and license_key in active_sessions:
+            user_info = f"{active_sessions[license_key].get('login', 'N/A')} ({license_key[:10]}...)"
+        logger.info(f"🔴 Cliente desconectado: {user_info}")
+
+    except asyncio.TimeoutError:
+        # ✅ LOG: Timeout no loop de mensagens
+        logger.error(f"❌ Timeout no loop de mensagens para {license_key or 'desconhecido'}")
 
     except Exception as e:
-        logger.error(f"❌ Erro no WebSocket ({license_key or 'desconhecido'}): {e}")
+        # ✅ LOG: Erro detalhado com traceback
+        logger.error(f"❌ Erro no WebSocket ({license_key or 'desconhecido'}): {e}", exc_info=True)
+        import traceback
+        logger.error(f"Traceback completo:\n{traceback.format_exc()}")
 
     finally:
         # Remover sessão (thread-safe)
@@ -1194,42 +1298,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 del active_sessions[license_key]
                 logger.info(f"🗑️ Sessão removida: {license_key}")
-
-# ═══════════════════════════════════════════════════════
-# STARTUP
-# ═══════════════════════════════════════════════════════
-
-@app.on_event("startup")
-async def startup():
-    logger.info("="*60)
-    logger.info("🚀 Fishing Bot Server iniciando...")
-    logger.info("="*60)
-    logger.info("✅ Servidor pronto para aceitar conexões!")
-    logger.info("📊 Usuários ativos: 0")
-    logger.info("="*60)
-
-@app.on_event("shutdown")
-async def shutdown():
-    logger.info("🛑 Encerrando servidor...")
-
-    # Fechar todas as conexões (thread-safe)
-    async with sessions_lock:
-        sessions_to_close = list(active_sessions.items())
-
-    for email, data in sessions_to_close:
-        try:
-            # ✅ CORREÇÃO #3: Cleanup de cada sessão
-            if "session" in data:
-                data["session"].cleanup()
-            await data["websocket"].close()
-        except:
-            pass
-
-    # ✅ CORREÇÃO #9: Fechar pool de conexões do banco
-    db_pool.close_all()
-    logger.info("✅ Database pool fechado")
-
-    logger.info("✅ Servidor encerrado")
+                logger.info(f"📊 Usuários ativos restantes: {len(active_sessions)}")
 
 # ═══════════════════════════════════════════════════════
 # EXECUTAR SERVIDOR
