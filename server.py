@@ -646,7 +646,7 @@ class FishingSession:
 class ActivationRequest(BaseModel):
     """Requisição de ativação com login/senha/license_key"""
     login: str                  # Login do usuário (qualquer valor)
-    password: str               # Senha (qualquer valor)
+    password: str = None        # Senha (opcional - não usada, apenas Keymaster valida)
     license_key: str            # License key do Keymaster
     hwid: str                   # Hardware ID do PC
     pc_name: str = None         # Nome do PC (opcional)
