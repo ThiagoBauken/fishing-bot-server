@@ -690,42 +690,52 @@ async def activate_license(request: ActivationRequest):
         with db_pool.get_write_connection() as conn:
             cursor = conn.cursor()
 
+            # ✅ CORREÇÃO CRÍTICA: Buscar binding pelo HWID primeiro
+            # Se o mesmo PC mudou de license key, devemos ATUALIZAR, não bloquear!
             cursor.execute("""
-                SELECT hwid, pc_name, bound_at, login
+                SELECT license_key, hwid, pc_name, bound_at, login
                 FROM hwid_bindings
-                WHERE license_key=?
-            """, (request.license_key,))
+                WHERE hwid=?
+            """, (request.hwid,))
 
-            binding = cursor.fetchone()
+            hwid_binding = cursor.fetchone()
 
-            if binding:
-                # JÁ TEM HWID VINCULADO
-                bound_hwid, bound_pc_name, bound_at, bound_login = binding
+            if hwid_binding:
+                # ENCONTROU BINDING PELO HWID
+                old_license_key, bound_hwid, bound_pc_name, bound_at, bound_login = hwid_binding
 
-                if request.hwid == bound_hwid:
-                    # ✅ MESMO PC - permitir
+                if old_license_key != request.license_key:
+                    # 🔄 MESMO PC, MAS LICENSE KEY DIFERENTE → ATUALIZAR!
+                    logger.warning(f"🔄 Detectada mudança de license key para o mesmo PC!")
+                    logger.warning(f"   License antiga: {old_license_key[:10]}...")
+                    logger.warning(f"   License nova: {request.license_key[:10]}...")
+                    logger.warning(f"   HWID: {request.hwid[:16]}...")
+                    logger.warning(f"   PC: {request.pc_name or 'N/A'}")
+
+                    # Remover binding antigo
+                    cursor.execute("""
+                        DELETE FROM hwid_bindings
+                        WHERE hwid=? AND license_key=?
+                    """, (request.hwid, old_license_key))
+
+                    # Criar novo binding com a nova license key
+                    cursor.execute("""
+                        INSERT INTO hwid_bindings (license_key, hwid, pc_name, login)
+                        VALUES (?, ?, ?, ?)
+                    """, (request.license_key, request.hwid, request.pc_name, request.login))
+
+                    logger.info(f"✅ Binding atualizado com sucesso!")
+                    logger.info(f"   Nova license: {request.license_key[:10]}...")
+
+                else:
+                    # ✅ MESMO PC, MESMA LICENSE KEY - apenas atualizar timestamp
                     logger.info(f"✅ HWID válido: {request.login} (PC: {request.pc_name or 'N/A'})")
 
-                    # Atualizar last_seen e login
                     cursor.execute("""
                         UPDATE hwid_bindings
                         SET last_seen=?, pc_name=?, login=?
-                        WHERE license_key=?
-                    """, (datetime.now().isoformat(), request.pc_name, request.login, request.license_key))
-                    # Commit automático via context manager
-
-                else:
-                    # ❌ PC DIFERENTE - bloquear
-                    logger.warning(f"🚫 HWID BLOQUEADO para license {request.license_key[:10]}...")
-                    logger.warning(f"   Login tentativa: {request.login}")
-                    logger.warning(f"   Login vinculado: {bound_login}")
-                    logger.warning(f"   PC esperado: {bound_pc_name}")
-                    logger.warning(f"   PC recebido: {request.pc_name}")
-
-                    return ActivationResponse(
-                        success=False,
-                        message=f"Esta licença já está vinculada a outro PC ({bound_pc_name or 'N/A'}). Login: {bound_login}"
-                    )
+                        WHERE hwid=? AND license_key=?
+                    """, (datetime.now().isoformat(), request.pc_name, request.login, request.hwid, request.license_key))
 
             else:
                 # NÃO TEM HWID VINCULADO → VINCULAR AGORA (primeiro uso)
@@ -733,7 +743,6 @@ async def activate_license(request: ActivationRequest):
                     INSERT INTO hwid_bindings (license_key, hwid, pc_name, login)
                     VALUES (?, ?, ?, ?)
                 """, (request.license_key, request.hwid, request.pc_name, request.login))
-                # Commit automático via context manager
 
                 logger.info(f"🔗 HWID vinculado pela primeira vez:")
                 logger.info(f"   License: {request.license_key[:10]}...")
