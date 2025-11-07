@@ -11,8 +11,10 @@ Servidor envia COORDENADAS e SEQUÊNCIAS completas
 Cliente apenas EXECUTA cegamente
 """
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import json
@@ -114,6 +116,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ═══════════════════════════════════════════════════════
+# EXCEPTION HANDLERS (para debug)
+# ═══════════════════════════════════════════════════════
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handler para erros de validação do Pydantic"""
+    logger.error("="*60)
+    logger.error("❌ ERRO DE VALIDAÇÃO (HTTP 422/400)")
+    logger.error(f"   URL: {request.url}")
+    logger.error(f"   Method: {request.method}")
+    logger.error(f"   Client: {request.client}")
+    logger.error(f"   Errors: {exc.errors()}")
+    logger.error(f"   Body: {exc.body}")
+    logger.error("="*60)
+
+    return JSONResponse(
+        status_code=422,
+        content={
+            "success": False,
+            "message": "Erro de validação nos dados enviados",
+            "errors": exc.errors(),
+            "detail": str(exc)
+        }
+    )
 
 # ═══════════════════════════════════════════════════════
 # KEYMASTER INTEGRATION
@@ -689,6 +717,16 @@ async def activate_license(request: ActivationRequest):
     3. Salvar login/senha associado à license_key
     4. Retornar token + regras de configuração
     """
+    # ✅ LOG: Dados recebidos do cliente
+    logger.info("="*60)
+    logger.info("📥 POST /auth/activate - Dados recebidos:")
+    logger.info(f"   Login: {request.login}")
+    logger.info(f"   Password: {'***' if request.password else 'None'}")
+    logger.info(f"   License Key: {request.license_key[:10]}...")
+    logger.info(f"   HWID: {request.hwid[:16]}...")
+    logger.info(f"   PC Name: {request.pc_name or 'N/A'}")
+    logger.info("="*60)
+
     try:
         # ══════════════════════════════════════════════════════
         # 1. VALIDAR COM KEYMASTER (OBRIGATÓRIO)
