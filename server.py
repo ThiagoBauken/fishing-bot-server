@@ -310,6 +310,7 @@ class FishingSession:
         self.current_pair_index = 0  # Par atual (0=Par1, 1=Par2, 2=Par3)
         self.rod_pairs = [(1,2), (3,4), (5,6)]  # Pares de varas
         self.use_limit = 20  # Limite de usos por vara (será atualizado por user_config)
+        self.two_rod_mode = False  # ✅ NOVO: Modo 2 varas (apenas slots 1-2)
 
         # ✅ NOVO: Timeout tracking por vara (para limpeza automática)
         self.rod_timeout_history = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}  # Timeouts consecutivos por vara
@@ -398,6 +399,12 @@ class FishingSession:
             if "rod_switch_limit" in validated_config:
                 self.use_limit = validated_config["rod_switch_limit"]
                 logger.info(f"⚙️ {self.login}: use_limit atualizado para {self.use_limit}")
+
+            # ✅ NOVO: Atualizar two_rod_mode
+            if "two_rod_mode" in config:
+                self.two_rod_mode = bool(config["two_rod_mode"])
+                modo_str = "ATIVO (apenas slots 1-2)" if self.two_rod_mode else "DESATIVADO (6 varas)"
+                logger.info(f"🎣 {self.login}: Modo 2 varas: {modo_str}")
 
             logger.info(f"⚙️ {self.login}: Configurações atualizadas: {validated_config}")
         except Exception as e:
@@ -552,10 +559,29 @@ class FishingSession:
         Verificar se deve trocar de par de varas
 
         Regra: Trocar quando AMBAS as varas do par atual atingirem o limite de usos
+        ✅ NOVO: Se two_rod_mode ativo, NUNCA trocar de par (manter no par 1)
 
         Returns:
             bool: True se deve trocar de par
         """
+        # ✅ MODO 2 VARAS: Não trocar de par, acionar manutenção ao invés
+        if self.two_rod_mode:
+            current_pair = self.rod_pairs[0]  # Sempre par 1
+            rod1, rod2 = current_pair
+            rod1_exhausted = self.rod_uses[rod1] >= self.use_limit
+            rod2_exhausted = self.rod_uses[rod2] >= self.use_limit
+
+            if rod1_exhausted and rod2_exhausted:
+                logger.info(f"🎣 {self.login}: MODO 2 VARAS - Par 1 esgotado, mas NÃO trocando de par")
+                logger.info(f"   Vara {rod1}: {self.rod_uses[rod1]}/{self.use_limit}, Vara {rod2}: {self.rod_uses[rod2]}/{self.use_limit}")
+                logger.info(f"   → Servidor aguarda MANUTENÇÃO ao invés de troca de par")
+                # Reset contadores (manutenção vai recarregar)
+                self.rod_uses[rod1] = 0
+                self.rod_uses[rod2] = 0
+
+            return False  # NUNCA trocar quando modo ativo
+
+        # MODO NORMAL: Trocar quando ambas varas esgotadas
         current_pair = self.rod_pairs[self.current_pair_index]
         rod1, rod2 = current_pair
 
@@ -854,6 +880,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Incrementar contador de peixes
                 session.increment_fish()
 
+                # ✅ VALIDAÇÃO: Verificar consistência do modo 2 varas
+                if session.two_rod_mode and current_rod > 2:
+                    logger.warning(f"⚠️ {login}: INCONSISTÊNCIA DETECTADA!")
+                    logger.warning(f"   Modo 2 varas ATIVO mas cliente usando vara {current_rod}")
+                    logger.warning(f"   Possível bug ou comportamento anormal")
+                    # TODO: Decidir ação (fechar conexão? forçar vara 1?)
+
                 # ✅ NOVO: Incrementar uso da vara atual
                 session.increment_rod_use(current_rod)
 
@@ -881,6 +914,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.info(f"🍖 {login}: Operação FEEDING adicionada ao batch")
 
                 # 🎣 PRIORIDADE 2: Trocar par de varas (se AMBAS esgotadas)
+                # ✅ MODO 2 VARAS: should_switch_rod_pair() retorna False quando modo ativo
                 if session.should_switch_rod_pair():
                     target_rod = session.get_next_pair_rod()
                     operations.append({
@@ -896,12 +930,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 #    1. Houve FEEDING (acabou de comer - verificar vara)
                 #    2. Houve TIMEOUT (vara pode estar quebrada/sem isca)
                 #    3. Vai fazer CLEANING (verificar antes de limpar)
+                #    4. ✅ NOVO: Modo 2 varas E ambas varas esgotadas (recarregar ao invés de trocar par)
                 has_feeding = any(op["type"] == "feeding" for op in operations)
                 will_clean = session.should_clean()
                 has_timeout = any(session.rod_timeout_history.get(r, 0) >= 1 for r in session.rod_timeout_history)
 
+                # ✅ MODO 2 VARAS: Verificar se precisa manutenção (ambas varas esgotadas)
+                two_rod_pair_exhausted = False
+                if session.two_rod_mode:
+                    rod1, rod2 = session.rod_pairs[0]  # Par 1
+                    rod1_exhausted = session.rod_uses[rod1] >= session.use_limit
+                    rod2_exhausted = session.rod_uses[rod2] >= session.use_limit
+                    two_rod_pair_exhausted = rod1_exhausted and rod2_exhausted
+
+                    if two_rod_pair_exhausted:
+                        logger.info(f"🔧 {login}: MODO 2 VARAS - Par 1 esgotado, acionando MANUTENÇÃO")
+
                 # Executar manutenção se qualquer condição for verdadeira
-                if has_feeding or will_clean or has_timeout:
+                if has_feeding or will_clean or has_timeout or two_rod_pair_exhausted:
                     operations.append({
                         "type": "maintenance",
                         "params": {}
@@ -913,6 +959,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         reason.append("timeout detectado")
                     if will_clean:
                         reason.append("antes cleaning")
+                    if two_rod_pair_exhausted:
+                        reason.append("modo 2 varas esgotado")
                     logger.info(f"🔧 {login}: Operação MAINTENANCE adicionada ao batch ({', '.join(reason)})")
 
                 # 🧹 PRIORIDADE 3: Limpar (a cada N peixes) - DEPOIS DA MANUTENÇÃO
