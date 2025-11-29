@@ -1,0 +1,28 @@
+# Fishing Bot Server - Dependências Python
+
+# FastAPI Framework
+fastapi==0.109.0
+
+# ASGI Server
+uvicorn[standard]==0.27.0
+
+# WebSocket Support
+websockets==12.0
+
+# Pydantic (validação de dados)
+pydantic==2.5.3
+
+# CORS
+python-multipart==0.0.6
+
+# HTTP Requests (para Keymaster integration)
+requests==2.31.0
+
+# ✅ CORREÇÃO: Carregar variáveis de ambiente do arquivo .env
+python-dotenv==1.0.0
+
+# Logging (built-in, mas listando para referência)
+# logging (incluído no Python)
+
+# SQLite3 (incluído no Python)
+# sqlite3 (incluído no Python)
