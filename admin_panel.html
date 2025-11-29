@@ -321,6 +321,9 @@
                             <th>Senha</th>
                             <th>PC Name</th>
                             <th>License Key</th>
+                            <th>🐟 Total</th>
+                            <th>🐟 Mês</th>
+                            <th>Última Pescaria</th>
                             <th>Cadastrado</th>
                             <th>Status</th>
                             <th>Ações</th>
@@ -455,6 +458,11 @@
                     ? user.password[0] + '*'.repeat(Math.max(0, user.password.length - 2)) + (user.password.length > 1 ? user.password[user.password.length - 1] : '')
                     : 'N/A';
 
+                // Formatar última pescaria
+                const lastFishDate = user.last_fish_date
+                    ? new Date(user.last_fish_date).toLocaleString('pt-BR')
+                    : '<span style="color: #888;">Nunca pescou</span>';
+
                 tr.innerHTML = `
                     <td>${user.id}</td>
                     <td><strong>${user.login}</strong></td>
@@ -462,6 +470,9 @@
                     <td><span style="font-family: monospace;">${maskedPassword}</span></td>
                     <td>${user.pc_name || 'N/A'}</td>
                     <td style="font-family: monospace; font-size: 0.85em; word-break: break-all;">${user.license_key}</td>
+                    <td><strong style="color: #28a745;">${user.total_fish || 0}</strong></td>
+                    <td><strong style="color: #0078d7;">${user.month_fish || 0}</strong></td>
+                    <td style="font-size: 0.85em;">${lastFishDate}</td>
                     <td>${new Date(user.created_at).toLocaleString('pt-BR')}</td>
                     <td>${statusBadge}</td>
                     <td class="user-actions">
