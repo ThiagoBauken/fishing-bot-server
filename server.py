@@ -1354,12 +1354,18 @@ async def admin_panel():
         raise HTTPException(status_code=404, detail="Painel admin não encontrado")
 
 @app.get("/admin/api/users")
-async def get_all_users(admin_password: str = Header(None)):
+async def get_all_users(
+    admin_password: str = Header(None, alias="admin_password"),
+    password: str = None  # Query param alternativo
+):
     """Lista todos os usuários (requer senha admin)"""
-    logger.info(f"🔐 /admin/api/users - Senha recebida: '{admin_password}' vs esperada: '{ADMIN_PASSWORD}'")
+    # ✅ FIX: Aceitar senha de header OU query param (igual /admin/api/stats)
+    senha_recebida = admin_password or password
 
-    if admin_password != ADMIN_PASSWORD:
-        logger.error(f"❌ /admin/api/users - SENHA INCORRETA!")
+    logger.info(f"🔐 /admin/api/users - Header: '{admin_password}', Query: '{password}', Usado: '{senha_recebida}'")
+
+    if senha_recebida != ADMIN_PASSWORD:
+        logger.error(f"❌ /admin/api/users - SENHA INCORRETA! '{senha_recebida}' != '{ADMIN_PASSWORD}'")
         raise HTTPException(status_code=401, detail="Senha de admin inválida")
 
     with db_pool.get_read_connection() as conn:
@@ -1388,9 +1394,17 @@ async def get_all_users(admin_password: str = Header(None)):
     return {"success": True, "users": users_list}
 
 @app.delete("/admin/api/user/{license_key}")
-async def delete_user(license_key: str, admin_password: str = Header(None)):
+async def delete_user(
+    license_key: str,
+    admin_password: str = Header(None, alias="admin_password"),
+    password: str = None  # Query param alternativo
+):
     """Deletar usuário (requer senha admin)"""
-    if admin_password != ADMIN_PASSWORD:
+    # ✅ FIX: Aceitar senha de header OU query param
+    senha_recebida = admin_password or password
+
+    if senha_recebida != ADMIN_PASSWORD:
+        logger.error(f"❌ DELETE user - Senha incorreta: '{senha_recebida}'")
         raise HTTPException(status_code=401, detail="Senha de admin inválida")
 
     try:
