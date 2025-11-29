@@ -807,6 +807,137 @@ async def activate_license(request: ActivationRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/auth/reset-password")
+async def user_reset_password(request: dict):
+    """
+    🔑 AUTO-RESET DE SENHA (SEM ADMIN)
+
+    Permite que o próprio usuário resete sua senha usando:
+    - License Key (autenticação)
+    - HWID (prova que é o mesmo PC)
+    - Nova senha
+
+    Body:
+    {
+        "license_key": "G871-5U0N-PPH2-3YON",
+        "hwid": "ABC123...",
+        "new_password": "nova_senha_aqui",
+        "new_login": "novo_login" (opcional)
+    }
+    """
+    try:
+        license_key = request.get("license_key")
+        hwid = request.get("hwid")
+        new_password = request.get("new_password")
+        new_login = request.get("new_login")  # Opcional
+
+        # Validação básica
+        if not license_key or not hwid or not new_password:
+            raise HTTPException(
+                status_code=400,
+                detail="license_key, hwid e new_password são obrigatórios"
+            )
+
+        if len(new_password) < 6:
+            raise HTTPException(
+                status_code=400,
+                detail="Senha deve ter no mínimo 6 caracteres"
+            )
+
+        # ══════════════════════════════════════════════════════
+        # 1. VALIDAR LICENSE KEY COM KEYMASTER
+        # ══════════════════════════════════════════════════════
+        keymaster_result = validate_with_keymaster(license_key, hwid)
+
+        if not keymaster_result["valid"]:
+            logger.warning(f"❌ Reset senha - Keymaster rejeitou: {license_key[:10]}...")
+            raise HTTPException(
+                status_code=401,
+                detail=keymaster_result["message"]
+            )
+
+        # ══════════════════════════════════════════════════════
+        # 2. VERIFICAR HWID BINDING (mesmo PC)
+        # ══════════════════════════════════════════════════════
+        with db_pool.get_read_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT login, hwid, pc_name
+                FROM hwid_bindings
+                WHERE license_key = ?
+            """, (license_key,))
+
+            binding = cursor.fetchone()
+
+        if not binding:
+            raise HTTPException(
+                status_code=404,
+                detail="License key não encontrada no banco de dados"
+            )
+
+        old_login, bound_hwid, pc_name = binding
+
+        # Verificar se HWID bate
+        if bound_hwid != hwid:
+            logger.warning(f"⚠️ Reset senha - HWID não corresponde!")
+            logger.warning(f"   License: {license_key[:10]}...")
+            logger.warning(f"   HWID esperado: {bound_hwid[:16]}...")
+            logger.warning(f"   HWID recebido: {hwid[:16]}...")
+            raise HTTPException(
+                status_code=403,
+                detail="HWID não corresponde! Este não é o PC vinculado à license key."
+            )
+
+        # ══════════════════════════════════════════════════════
+        # 3. ATUALIZAR SENHA (e login se fornecido)
+        # ══════════════════════════════════════════════════════
+        with db_pool.get_write_connection() as conn:
+            cursor = conn.cursor()
+
+            if new_login:
+                # Atualizar senha E login
+                cursor.execute("""
+                    UPDATE hwid_bindings
+                    SET password = ?, login = ?, last_seen = ?
+                    WHERE license_key = ?
+                """, (new_password, new_login, datetime.now().isoformat(), license_key))
+
+                logger.info(f"🔑 Usuário resetou senha e login:")
+                logger.info(f"   License: {license_key[:10]}...")
+                logger.info(f"   Login antigo: {old_login}")
+                logger.info(f"   Login novo: {new_login}")
+                logger.info(f"   PC: {pc_name or 'N/A'}")
+
+                message = f"Senha e login atualizados com sucesso! Novo login: {new_login}"
+            else:
+                # Atualizar apenas senha
+                cursor.execute("""
+                    UPDATE hwid_bindings
+                    SET password = ?, last_seen = ?
+                    WHERE license_key = ?
+                """, (new_password, datetime.now().isoformat(), license_key))
+
+                logger.info(f"🔑 Usuário resetou senha:")
+                logger.info(f"   License: {license_key[:10]}...")
+                logger.info(f"   Login: {old_login}")
+                logger.info(f"   PC: {pc_name or 'N/A'}")
+
+                message = f"Senha atualizada com sucesso para '{old_login}'!"
+
+        return {
+            "success": True,
+            "message": message,
+            "login": new_login or old_login
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro no reset de senha: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ═══════════════════════════════════════════════════════
 # WEBSOCKET (HEARTBEAT - Mantém conexão ativa)
 # ═══════════════════════════════════════════════════════
