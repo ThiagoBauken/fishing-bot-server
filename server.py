@@ -1843,6 +1843,58 @@ async def delete_user(
         logger.error(f"Erro ao deletar usuário: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/admin/api/user/{license_key}")
+async def get_user_details(
+    license_key: str,
+    admin_password: str = Header(None, alias="admin_password"),
+    password: str = None  # Query param alternativo
+):
+    """Obter detalhes de um usuário específico (requer senha admin)"""
+    # ✅ Aceitar senha de header OU query param
+    senha_recebida = admin_password or password
+
+    if senha_recebida != ADMIN_PASSWORD:
+        logger.error(f"❌ GET user details - Senha incorreta")
+        raise HTTPException(status_code=401, detail="Senha de admin inválida")
+
+    try:
+        with db_pool.get_read_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT login, pc_name, license_key, bound_at, last_seen,
+                       hwid, email, password, total_fish, month_fish, last_fish_date
+                FROM hwid_bindings
+                WHERE license_key = ?
+            """, (license_key,))
+            user = cursor.fetchone()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+        user_data = {
+            "login": user[0],
+            "pc_name": user[1],
+            "license_key": user[2],
+            "created_at": user[3],
+            "last_seen": user[4],
+            "hwid": user[5],
+            "email": user[6] or "N/A",
+            "password": user[7] or "N/A",
+            "total_fish": user[8] or 0,
+            "month_fish": user[9] or 0,
+            "last_fish_date": user[10] or "N/A",
+            "is_active": license_key in active_sessions
+        }
+
+        logger.info(f"📊 Admin consultou detalhes do usuário: {user[0]}")
+        return {"success": True, "user": user_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao buscar usuário: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/admin/api/reset-password")
 async def reset_password(
     request: dict,
