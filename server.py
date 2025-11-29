@@ -66,22 +66,17 @@ PROJECT_ID = os.getenv("PROJECT_ID", "67a4a76a-d71b-4d07-9ba8-f7e794ce0578")
 PORT = int(os.getenv("PORT", "8122"))
 
 # FastAPI app
-# ⚠️ SEGURANÇA: Desabilitar docs em produção (pode expor endpoints)
-ENABLE_DOCS = os.getenv("ENABLE_DOCS", "false").lower() == "true"
-
+# 🔒 SEGURANÇA: Documentação DESABILITADA em produção
 app = FastAPI(
     title="Fishing Bot Server",
     description="Servidor multi-usuário para Fishing Bot",
     version="1.0.0",
-    docs_url="/docs" if ENABLE_DOCS else None,  # Desabilita /docs em produção
-    redoc_url="/redoc" if ENABLE_DOCS else None,  # Desabilita /redoc em produção
-    openapi_url="/openapi.json" if ENABLE_DOCS else None  # Desabilita schema em produção
+    docs_url=None,  # ✅ DESABILITADO: /docs
+    redoc_url=None,  # ✅ DESABILITADO: /redoc
+    openapi_url=None  # ✅ DESABILITADO: /openapi.json
 )
 
-if ENABLE_DOCS:
-    logger.warning("⚠️ ATENÇÃO: Documentação Swagger HABILITADA em /docs (não recomendado em produção!)")
-else:
-    logger.info("✅ Documentação Swagger DESABILITADA (segurança)")
+logger.info("✅ Documentação Swagger PERMANENTEMENTE DESABILITADA (segurança)")
 
 
 # CORS (permite conexões de qualquer origem)
@@ -1337,21 +1332,8 @@ class AdminAction(BaseModel):
     license_key: str
     action: str  # 'delete', 'reset_password', 'toggle_active'
 
-@app.get("/admin/debug")
-async def admin_debug():
-    """🐛 DEBUG: Mostra configuração do servidor (REMOVER EM PRODUÇÃO!)"""
-    import hashlib
-    password_hash = hashlib.md5(ADMIN_PASSWORD.encode()).hexdigest()
-
-    return {
-        "server": "Fishing Bot Server v2.0.0",
-        "admin_password_hash": password_hash,
-        "admin_password_length": len(ADMIN_PASSWORD),
-        "admin_password_first_chars": ADMIN_PASSWORD[:4] + "...",
-        "env_loaded": os.getenv("ADMIN_PASSWORD") is not None,
-        "port": PORT,
-        "keymaster_url": KEYMASTER_URL
-    }
+# ✅ ROTA DE DEBUG REMOVIDA POR SEGURANÇA
+# Não expor informações sensíveis em produção
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_panel():
