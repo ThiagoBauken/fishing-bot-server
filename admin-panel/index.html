@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎣 Admin Panel - Fishing Bot v5.0</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            color: #cccccc;
+            font-size: 1.1rem;
+        }
+
+        .auth-box {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 30px;
+            max-width: 500px;
+            margin: 50px auto;
+            backdrop-filter: blur(10px);
+        }
+
+        .auth-box h2 {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 5px;
+            font-size: 1rem;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 5px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #218838;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+        }
+
+        .stat-card h3 {
+            color: #cccccc;
+            font-size: 0.9rem;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+
+        .stat-card .value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #00ff88;
+        }
+
+        .users-section {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+        }
+
+        .users-section h2 {
+            margin-bottom: 20px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        table th,
+        table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        table th {
+            background: rgba(0, 0, 0, 0.2);
+            font-weight: bold;
+        }
+
+        table tr:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .user-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 0.85rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-warning {
+            background: #ffc107;
+            color: #000;
+        }
+
+        .btn-warning:hover {
+            background: #e0a800;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: #fff;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+        }
+
+        .btn-success {
+            background: #28a745;
+            color: #fff;
+        }
+
+        .btn-success:hover {
+            background: #218838;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+
+        .status-active {
+            background: #28a745;
+            color: white;
+        }
+
+        .status-inactive {
+            background: #dc3545;
+            color: white;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            font-size: 1.2rem;
+        }
+
+        .error {
+            background: #dc3545;
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+
+        .success {
+            background: #28a745;
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+
+        #logout-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: #dc3545;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        #logout-btn:hover {
+            background: #c82333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Login Screen -->
+        <div id="auth-screen" class="auth-box">
+            <header>
+                <h1>🎣 Fishing Bot v5.0</h1>
+                <p>Painel Administrativo</p>
+            </header>
+
+            <h2>🔐 Login de Admin</h2>
+
+            <div class="form-group">
+                <label for="admin-password">Senha de Admin:</label>
+                <input type="password" id="admin-password" placeholder="Digite a senha de admin">
+            </div>
+
+            <button class="btn btn-primary" onclick="login()">Entrar</button>
+
+            <div id="auth-error" style="margin-top: 20px; display: none;" class="error"></div>
+        </div>
+
+        <!-- Admin Panel -->
+        <div id="admin-panel" style="display: none;">
+            <button id="logout-btn" onclick="logout()">🚪 Sair</button>
+
+            <header>
+                <h1>🎣 Ultimate Fishing Bot v5.0</h1>
+                <p>Painel Administrativo</p>
+            </header>
+
+            <!-- Statistics -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>👥 Total de Usuários</h3>
+                    <div class="value" id="stat-total-users">0</div>
+                </div>
+                <div class="stat-card">
+                    <h3>✅ Usuários Ativos</h3>
+                    <div class="value" id="stat-active-users">0</div>
+                </div>
+                <div class="stat-card">
+                    <h3>🐟 Peixes Totais</h3>
+                    <div class="value" id="stat-total-fish">0</div>
+                </div>
+                <div class="stat-card">
+                    <h3>📅 Peixes este Mês</h3>
+                    <div class="value" id="stat-month-fish">0</div>
+                </div>
+            </div>
+
+            <!-- Users Table -->
+            <div class="users-section">
+                <h2>👥 Usuários Cadastrados</h2>
+
+                <button class="btn btn-primary" onclick="loadUsers()" style="max-width: 200px;">
+                    🔄 Atualizar
+                </button>
+
+                <div id="message-box" style="margin-top: 20px; display: none;"></div>
+
+                <div id="users-loading" class="loading">Carregando usuários...</div>
+
+                <table id="users-table" style="display: none;">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Username</th>
+                            <th>Email</th>
+                            <th>License Key</th>
+                            <th>Peixes</th>
+                            <th>Status</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="users-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let adminPassword = '';
+
+        // Login
+        function login() {
+            const password = document.getElementById('admin-password').value;
+
+            if (!password) {
+                showAuthError('Digite a senha de admin');
+                return;
+            }
+
+            adminPassword = password;
+
+            // Testar autenticação
+            fetch('/admin/api/stats', {
+                headers: {
+                    'admin_password': adminPassword
+                }
+            })
+            .then(res => {
+                if (res.status === 401) {
+                    throw new Error('Senha incorreta');
+                }
+                return res.json();
+            })
+            .then(data => {
+                document.getElementById('auth-screen').style.display = 'none';
+                document.getElementById('admin-panel').style.display = 'block';
+                loadDashboard();
+            })
+            .catch(err => {
+                showAuthError(err.message);
+            });
+        }
+
+        // Logout
+        function logout() {
+            adminPassword = '';
+            document.getElementById('auth-screen').style.display = 'block';
+            document.getElementById('admin-panel').style.display = 'none';
+            document.getElementById('admin-password').value = '';
+        }
+
+        // Show auth error
+        function showAuthError(message) {
+            const errorBox = document.getElementById('auth-error');
+            errorBox.textContent = '❌ ' + message;
+            errorBox.style.display = 'block';
+        }
+
+        // Load dashboard
+        function loadDashboard() {
+            loadStats();
+            loadUsers();
+        }
+
+        // Load stats
+        function loadStats() {
+            fetch('/admin/api/stats', {
+                headers: { 'admin_password': adminPassword }
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('stat-total-users').textContent = data.stats.total_users;
+                    document.getElementById('stat-active-users').textContent = data.stats.active_users;
+                    document.getElementById('stat-total-fish').textContent = data.stats.total_fish.toLocaleString();
+                    document.getElementById('stat-month-fish').textContent = data.stats.month_fish.toLocaleString();
+                }
+            });
+        }
+
+        // Load users
+        function loadUsers() {
+            document.getElementById('users-loading').style.display = 'block';
+            document.getElementById('users-table').style.display = 'none';
+
+            fetch('/admin/api/users', {
+                headers: { 'admin_password': adminPassword }
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    renderUsers(data.users);
+                }
+            })
+            .catch(err => {
+                showMessage('Erro ao carregar usuários: ' + err.message, 'error');
+            });
+        }
+
+        // Render users
+        function renderUsers(users) {
+            const tbody = document.getElementById('users-tbody');
+            tbody.innerHTML = '';
+
+            users.forEach(user => {
+                const tr = document.createElement('tr');
+
+                const statusBadge = user.is_active
+                    ? '<span class="status-badge status-active">Ativo</span>'
+                    : '<span class="status-badge status-inactive">Inativo</span>';
+
+                tr.innerHTML = `
+                    <td>${user.id}</td>
+                    <td>${user.username}</td>
+                    <td>${user.email}</td>
+                    <td>${user.license_key.substring(0, 20)}...</td>
+                    <td>${user.total_fish}</td>
+                    <td>${statusBadge}</td>
+                    <td class="user-actions">
+                        <button class="btn-small btn-warning" onclick="resetPassword(${user.id}, '${user.username}')">
+                            🔑 Resetar Senha
+                        </button>
+                        <button class="btn-small ${user.is_active ? 'btn-danger' : 'btn-success'}"
+                                onclick="toggleActive(${user.id})">
+                            ${user.is_active ? '❌ Desativar' : '✅ Ativar'}
+                        </button>
+                    </td>
+                `;
+
+                tbody.appendChild(tr);
+            });
+
+            document.getElementById('users-loading').style.display = 'none';
+            document.getElementById('users-table').style.display = 'table';
+        }
+
+        // Reset password
+        function resetPassword(userId, username) {
+            const newPassword = prompt(`Digite a nova senha para ${username}:`);
+
+            if (!newPassword) return;
+
+            if (newPassword.length < 6) {
+                alert('Senha deve ter no mínimo 6 caracteres');
+                return;
+            }
+
+            fetch('/admin/api/reset-password', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'admin_password': adminPassword
+                },
+                body: JSON.stringify({ user_id: userId, new_password: newPassword })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage(`✅ ${data.message}`, 'success');
+                } else {
+                    showMessage(`❌ ${data.message}`, 'error');
+                }
+            });
+        }
+
+        // Toggle active
+        function toggleActive(userId) {
+            fetch('/admin/api/toggle-active', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'admin_password': adminPassword
+                },
+                body: JSON.stringify({ user_id: userId })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage(`✅ ${data.message}`, 'success');
+                    loadUsers();
+                    loadStats();
+                } else {
+                    showMessage(`❌ ${data.message}`, 'error');
+                }
+            });
+        }
+
+        // Show message
+        function showMessage(message, type) {
+            const box = document.getElementById('message-box');
+            box.className = type;
+            box.textContent = message;
+            box.style.display = 'block';
+
+            setTimeout(() => {
+                box.style.display = 'none';
+            }, 5000);
+        }
+
+        // Enter key to login
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('admin-password').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') login();
+            });
+        });
+    </script>
+</body>
+</html>

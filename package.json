@@ -1,0 +1,35 @@
+{
+  "name": "fishing-bot-auth-server",
+  "version": "1.0.0",
+  "description": "Servidor de autenticação completo para Ultimate Fishing Bot v5.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "init-db": "node init-database.js"
+  },
+  "keywords": [
+    "authentication",
+    "fishing-bot",
+    "express",
+    "sqlite"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "better-sqlite3": "^9.2.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^7.1.0",
+    "axios": "^1.6.2",
+    "nodemailer": "^6.9.7",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
