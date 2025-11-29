@@ -278,10 +278,165 @@ def init_database():
             )
         """)
 
-    logger.info("✅ Banco de dados inicializado (HWID bindings)")
+        # ✅ NOVA: Tabela de tentativas de reset (anti-brute-force + notificação)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS reset_attempts (
+                license_key TEXT PRIMARY KEY,
+                attempts INTEGER DEFAULT 0,
+                last_attempt TEXT,
+                last_hwid_tried TEXT,
+                blocked_until TEXT
+            )
+        """)
+
+        # ✅ NOVA: Tabela de logs de segurança (para painel admin)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS security_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                event_type TEXT NOT NULL,
+                license_key TEXT,
+                hwid TEXT,
+                details TEXT,
+                severity TEXT
+            )
+        """)
+
+    logger.info("✅ Banco de dados inicializado (HWID bindings + security)")
 
 # Inicializar ao startar
 init_database()
+
+# ═══════════════════════════════════════════════════════
+# FUNÇÕES DE SEGURANÇA
+# ═══════════════════════════════════════════════════════
+
+def log_security_event(event_type: str, license_key: str, hwid: str, details: str, severity: str = "WARNING"):
+    """
+    📝 Registrar evento de segurança para painel admin
+
+    Args:
+        event_type: Tipo do evento (ex: "HWID_MISMATCH", "RESET_BLOCKED", etc)
+        license_key: License key envolvida
+        hwid: HWID tentado
+        details: Detalhes do evento
+        severity: INFO, WARNING, CRITICAL
+    """
+    try:
+        with db_pool.get_write_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO security_logs (event_type, license_key, hwid, details, severity)
+                VALUES (?, ?, ?, ?, ?)
+            """, (event_type, license_key[:10] + "...", hwid[:16] + "...", details, severity))
+
+        logger.warning(f"🔐 {severity}: {event_type} - {details}")
+    except Exception as e:
+        logger.error(f"Erro ao logar evento de segurança: {e}")
+
+def check_reset_attempts(license_key: str) -> tuple[bool, str]:
+    """
+    🚫 Verificar se license key está bloqueada por tentativas excessivas
+
+    Returns:
+        (bloqueado, mensagem)
+    """
+    try:
+        with db_pool.get_read_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT attempts, last_attempt, blocked_until
+                FROM reset_attempts
+                WHERE license_key = ?
+            """, (license_key,))
+
+            result = cursor.fetchone()
+
+            if not result:
+                return (False, "")  # Primeira tentativa
+
+            attempts, last_attempt, blocked_until = result
+
+            # Verificar se está bloqueado
+            if blocked_until:
+                from datetime import datetime
+                blocked_until_dt = datetime.fromisoformat(blocked_until)
+                now = datetime.now()
+
+                if now < blocked_until_dt:
+                    remaining = int((blocked_until_dt - now).total_seconds() / 60)
+                    return (True, f"Bloqueado por tentativas excessivas. Aguarde {remaining} minutos.")
+
+            # Verificar se passou 1 hora desde última tentativa (resetar contador)
+            if last_attempt:
+                from datetime import datetime, timedelta
+                last_dt = datetime.fromisoformat(last_attempt)
+                if datetime.now() - last_dt > timedelta(hours=1):
+                    # Resetar contador
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE reset_attempts
+                        SET attempts = 0, blocked_until = NULL
+                        WHERE license_key = ?
+                    """, (license_key,))
+                    return (False, "")
+
+            # Verificar se atingiu limite (3 tentativas)
+            if attempts >= 3:
+                return (True, "Limite de tentativas atingido. Aguarde 1 hora ou contate o admin.")
+
+            return (False, "")
+
+    except Exception as e:
+        logger.error(f"Erro ao verificar tentativas: {e}")
+        return (False, "")
+
+def increment_reset_attempts(license_key: str, hwid: str):
+    """
+    ➕ Incrementar contador de tentativas de reset
+
+    Bloqueia por 1 hora após 3 tentativas
+    """
+    try:
+        from datetime import datetime, timedelta
+
+        with db_pool.get_write_connection() as conn:
+            cursor = conn.cursor()
+
+            # Verificar se já existe
+            cursor.execute("SELECT attempts FROM reset_attempts WHERE license_key = ?", (license_key,))
+            result = cursor.fetchone()
+
+            if result:
+                new_attempts = result[0] + 1
+
+                # Bloquear se atingiu 3 tentativas
+                blocked_until = None
+                if new_attempts >= 3:
+                    blocked_until = (datetime.now() + timedelta(hours=1)).isoformat()
+                    log_security_event(
+                        "RESET_BLOCKED",
+                        license_key,
+                        hwid,
+                        f"Bloqueado por {new_attempts} tentativas de reset com HWID incorreto",
+                        "CRITICAL"
+                    )
+
+                cursor.execute("""
+                    UPDATE reset_attempts
+                    SET attempts = ?, last_attempt = ?, last_hwid_tried = ?, blocked_until = ?
+                    WHERE license_key = ?
+                """, (new_attempts, datetime.now().isoformat(), hwid, blocked_until, license_key))
+            else:
+                # Primeira tentativa
+                cursor.execute("""
+                    INSERT INTO reset_attempts (license_key, attempts, last_attempt, last_hwid_tried)
+                    VALUES (?, 1, ?, ?)
+                """, (license_key, datetime.now().isoformat(), hwid))
+
+        logger.info(f"🔢 Reset attempts incrementado para {license_key[:10]}...")
+    except Exception as e:
+        logger.error(f"Erro ao incrementar tentativas: {e}")
 
 # ═══════════════════════════════════════════════════════
 # SESSÕES ATIVAS (em memória)
@@ -944,6 +1099,13 @@ async def user_reset_password(request: dict):
             )
 
         # ══════════════════════════════════════════════════════
+        # 🛡️ PROTEÇÃO: Verificar tentativas excessivas
+        # ══════════════════════════════════════════════════════
+        bloqueado, msg_bloqueio = check_reset_attempts(license_key)
+        if bloqueado:
+            raise HTTPException(status_code=429, detail=msg_bloqueio)
+
+        # ══════════════════════════════════════════════════════
         # 1. VALIDAR LICENSE KEY COM KEYMASTER
         # ══════════════════════════════════════════════════════
         keymaster_result = validate_with_keymaster(license_key, hwid)
@@ -978,13 +1140,29 @@ async def user_reset_password(request: dict):
 
         # Verificar se HWID bate
         if bound_hwid != hwid:
-            logger.warning(f"⚠️ Reset senha - HWID não corresponde!")
+            # 🚨 NOTIFICAÇÃO AO ADMIN: Tentativa de reset em PC diferente
+            logger.warning(f"🚨 TENTATIVA DE RESET EM PC DIFERENTE!")
             logger.warning(f"   License: {license_key[:10]}...")
+            logger.warning(f"   Login: {old_login}")
+            logger.warning(f"   PC original: {pc_name or 'N/A'}")
             logger.warning(f"   HWID esperado: {bound_hwid[:16]}...")
             logger.warning(f"   HWID recebido: {hwid[:16]}...")
+
+            # 📝 Logar evento de segurança para painel admin
+            log_security_event(
+                "HWID_MISMATCH_RESET",
+                license_key,
+                hwid,
+                f"Tentativa de reset de senha com HWID incorreto. Login: {old_login}, PC: {pc_name or 'N/A'}",
+                "WARNING"
+            )
+
+            # 🔢 Incrementar contador de tentativas
+            increment_reset_attempts(license_key, hwid)
+
             raise HTTPException(
                 status_code=403,
-                detail="HWID não corresponde! Este não é o PC vinculado à license key."
+                detail="HWID não corresponde! Este não é o PC vinculado à license key. Contate o admin."
             )
 
         # ══════════════════════════════════════════════════════
@@ -1996,6 +2174,71 @@ async def get_admin_stats(
             "keymaster_url": KEYMASTER_URL
         }
     }
+
+@app.get("/admin/api/security-logs")
+async def get_security_logs(
+    admin_password: str = Header(None, alias="admin_password"),
+    password: str = None,  # Query param alternativo
+    limit: int = 100,  # Limite de logs (padrão: 100 mais recentes)
+    severity: str = None  # Filtro opcional por severity (INFO, WARNING, CRITICAL)
+):
+    """
+    🛡️ Visualizar logs de segurança (requer senha admin)
+
+    Mostra tentativas de reset com HWID incorreto, bloqueios, etc.
+    """
+    # ✅ Aceitar senha de header OU query param
+    senha_recebida = admin_password or password
+
+    if senha_recebida != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Senha de admin inválida")
+
+    try:
+        with db_pool.get_read_connection() as conn:
+            cursor = conn.cursor()
+
+            # Query base
+            query = """
+                SELECT id, timestamp, event_type, license_key, hwid, details, severity
+                FROM security_logs
+            """
+
+            params = []
+
+            # Filtro por severity (opcional)
+            if severity:
+                query += " WHERE severity = ?"
+                params.append(severity)
+
+            # Ordenar por mais recentes
+            query += " ORDER BY id DESC LIMIT ?"
+            params.append(limit)
+
+            cursor.execute(query, params)
+            logs = cursor.fetchall()
+
+        logs_list = [
+            {
+                "id": log[0],
+                "timestamp": log[1],
+                "event_type": log[2],
+                "license_key": log[3],
+                "hwid": log[4],
+                "details": log[5],
+                "severity": log[6]
+            }
+            for log in logs
+        ]
+
+        return {
+            "success": True,
+            "total": len(logs_list),
+            "logs": logs_list
+        }
+
+    except Exception as e:
+        logger.error(f"Erro ao buscar logs de segurança: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ═══════════════════════════════════════════════════════
 # EXECUTAR SERVIDOR
