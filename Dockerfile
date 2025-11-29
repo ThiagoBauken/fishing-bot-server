@@ -34,6 +34,9 @@ COPY admin_panel.html .
 # Criar diretório para banco de dados
 RUN mkdir -p /app/data
 
+# ✅ VOLUME PERSISTENTE: Garantir que banco não seja perdido em redeploy
+VOLUME ["/app/data"]
+
 # Expor porta
 EXPOSE ${PORT}
 

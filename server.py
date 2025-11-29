@@ -244,7 +244,11 @@ class _WriteConnection:
         self.pool.write_lock.release()
 
 # Criar pool global
-db_pool = DatabasePool("fishing_bot.db", pool_size=20)
+# ✅ CORREÇÃO: Salvar banco em /app/data para persistência em Docker
+import os
+DB_PATH = os.path.join(os.path.dirname(__file__), "data", "fishing_bot.db")
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+db_pool = DatabasePool(DB_PATH, pool_size=20)
 
 def init_database():
     """
