@@ -1,41 +1,35 @@
 # ══════════════════════════════════════════════════════════════
-# 🎣 Fishing Bot v5.0 - Servidor de Autenticação Node.js
+# 🎣 Fishing Bot v5.0 - Servidor Python FastAPI
 # Dockerfile para deploy no EasyPanel ou qualquer plataforma Docker
 # ══════════════════════════════════════════════════════════════
 
-FROM node:18-alpine
+FROM python:3.11-slim
 
 # Metadados
 LABEL maintainer="Fishing Bot Team"
 LABEL version="5.0.0"
-LABEL description="Servidor de autenticação com JWT, admin panel e stats"
+LABEL description="Servidor de autenticação e gerenciamento com FastAPI, WebSocket e painel admin"
 
-# Argumento de build para porta (padrão 3000)
-ARG PORT=3000
+# Argumento de build para porta (padrão 8122)
+ARG PORT=8122
 ENV PORT=${PORT}
-
-# Variável de ambiente para produção
-ENV NODE_ENV=production
 
 # Diretório de trabalho
 WORKDIR /app
 
-# Copiar package.json e package-lock.json primeiro (cache de layers)
-COPY package*.json ./
+# Copiar requirements primeiro (cache de layers)
+COPY requirements.txt .
 
-# Instalar dependências de produção
-RUN npm ci --only=production
+# Instalar dependências
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar todo o código do servidor
-COPY server.js .
-COPY database.js .
-COPY auth-routes.js .
-COPY admin-routes.js .
-COPY stats-routes.js .
-COPY ws-handler.js .
+# Copiar código do servidor
+COPY server.py .
+COPY action_sequences.py .
+COPY action_builder.py .
 
 # Copiar painel administrativo
-COPY admin-panel/ ./admin-panel/
+COPY admin_panel.html .
 
 # Criar diretório para banco de dados
 RUN mkdir -p /app/data
@@ -45,7 +39,7 @@ EXPOSE ${PORT}
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:${process.env.PORT || 3000}/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
+  CMD python -c "import urllib.request; urllib.request.urlopen(f'http://localhost:{${PORT}}/health')"
 
 # Comando para rodar o servidor
-CMD ["node", "server.js"]
+CMD ["python", "server.py"]
