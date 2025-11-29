@@ -1420,20 +1420,28 @@ async def delete_user(license_key: str, admin_password: str = Header(None)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin/api/stats")
-async def get_admin_stats(admin_password: str = Header(None)):
+async def get_admin_stats(
+    admin_password: str = Header(None, alias="admin_password"),
+    password: str = None  # Query param alternativo
+):
     """Estatísticas gerais do servidor"""
+    # ✅ FIX: Aceitar senha de header OU query param
+    senha_recebida = admin_password or password
+
     # ✅ DEBUG COMPLETO: Logar tentativa de autenticação
     logger.info(f"="*60)
     logger.info(f"🔐 AUTENTICAÇÃO ADMIN - DEBUG COMPLETO:")
-    logger.info(f"   Senha recebida: '{admin_password}'")
+    logger.info(f"   Header 'admin_password': '{admin_password}'")
+    logger.info(f"   Query param 'password': '{password}'")
+    logger.info(f"   Senha final usada: '{senha_recebida}'")
     logger.info(f"   Senha esperada: '{ADMIN_PASSWORD}'")
-    logger.info(f"   Recebida length: {len(admin_password) if admin_password else 0}")
+    logger.info(f"   Recebida length: {len(senha_recebida) if senha_recebida else 0}")
     logger.info(f"   Esperada length: {len(ADMIN_PASSWORD)}")
-    logger.info(f"   Comparação: {admin_password == ADMIN_PASSWORD}")
+    logger.info(f"   Comparação: {senha_recebida == ADMIN_PASSWORD}")
     logger.info(f"="*60)
 
-    if admin_password != ADMIN_PASSWORD:
-        logger.error(f"❌ SENHA INCORRETA! Recebida='{admin_password}' != Esperada='{ADMIN_PASSWORD}'")
+    if senha_recebida != ADMIN_PASSWORD:
+        logger.error(f"❌ SENHA INCORRETA! Recebida='{senha_recebida}' != Esperada='{ADMIN_PASSWORD}'")
         raise HTTPException(status_code=401, detail="Senha de admin inválida")
 
     with db_pool.get_read_connection() as conn:

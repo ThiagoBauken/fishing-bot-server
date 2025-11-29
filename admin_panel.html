@@ -337,31 +337,39 @@
         function login() {
             const password = document.getElementById('admin-password').value;
 
+            console.log(`🔐 Login iniciado - Senha digitada: ${password.length} caracteres`);
+
             if (!password) {
                 showAuthError('Digite a senha de admin');
                 return;
             }
 
             adminPassword = password;
+            console.log(`✅ adminPassword definido: ${adminPassword.length} caracteres`);
+            console.log(`📤 Enviando request com header: admin_password="${adminPassword}"`);
 
             // Testar autenticação
             fetch('/admin/api/stats', {
                 headers: {
-                    'admin_password': adminPassword
+                    'admin_password': adminPassword,
+                    'Content-Type': 'application/json'
                 }
             })
             .then(res => {
+                console.log(`📥 Response status: ${res.status}`);
                 if (res.status === 401) {
                     throw new Error('Senha incorreta');
                 }
                 return res.json();
             })
             .then(data => {
+                console.log('✅ Login bem-sucedido!');
                 document.getElementById('auth-screen').style.display = 'none';
                 document.getElementById('admin-panel').style.display = 'block';
                 loadDashboard();
             })
             .catch(err => {
+                console.error(`❌ Erro no login: ${err.message}`);
                 showAuthError(err.message);
             });
         }
@@ -389,6 +397,12 @@
 
         // Load stats
         function loadStats() {
+            // ✅ FIX: Não fazer request se não tiver senha!
+            if (!adminPassword || adminPassword.length === 0) {
+                console.warn('❌ loadStats: Sem senha configurada, ignorando request');
+                return;
+            }
+
             fetch('/admin/api/stats', {
                 headers: { 'admin_password': adminPassword }
             })
