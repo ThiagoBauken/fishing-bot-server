@@ -1323,8 +1323,9 @@ from fastapi import Header
 from pydantic import BaseModel
 
 # Senha do painel admin
-# ✅ HARDCODED para debug (temporário)
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "AdminPesca2025Seguro")
+# ✅ TOTALMENTE HARDCODED (ignora .env e variáveis de ambiente!)
+# NÃO USAR os.getenv() - usar valor direto para debug
+ADMIN_PASSWORD = "AdminPesca2025Seguro"  # ← HARDCODED DIRETO!
 
 # ✅ DEBUG: Logar senha configurada COMPLETA (apenas para debug!)
 logger.info(f"="*60)
