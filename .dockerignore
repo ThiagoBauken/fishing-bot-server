@@ -1,6 +1,15 @@
 # Node modules (serão instalados no container)
 node_modules/
 
+# ✅ IMPORTANTE: Excluir servidor Node.js antigo (usamos Python FastAPI agora)
+server.js
+auth-routes.js
+stats-routes.js
+admin-routes.js
+ws-handler.js
+database.js
+*.nodejs-backup
+
 # Arquivos de ambiente locais
 .env
 .env.local
