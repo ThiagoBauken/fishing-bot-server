@@ -265,7 +265,9 @@ def init_database():
                 bound_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
                 pc_name TEXT,
-                login TEXT
+                login TEXT,
+                email TEXT,
+                password TEXT
             )
         """)
 
@@ -660,6 +662,7 @@ class ActivationRequest(BaseModel):
     license_key: str            # License key do Keymaster
     hwid: str                   # Hardware ID do PC
     pc_name: str = None         # Nome do PC (opcional)
+    email: str = None           # Email do usuário (opcional)
 
 class ActivationResponse(BaseModel):
     """Resposta de ativação"""
@@ -753,9 +756,9 @@ async def activate_license(request: ActivationRequest):
 
                     # Criar novo binding com a nova license key
                     cursor.execute("""
-                        INSERT INTO hwid_bindings (license_key, hwid, pc_name, login)
-                        VALUES (?, ?, ?, ?)
-                    """, (request.license_key, request.hwid, request.pc_name, request.login))
+                        INSERT INTO hwid_bindings (license_key, hwid, pc_name, login, email, password)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (request.license_key, request.hwid, request.pc_name, request.login, request.email, request.password))
 
                     logger.info(f"✅ Binding atualizado com sucesso!")
                     logger.info(f"   Nova license: {request.license_key[:10]}...")
@@ -766,16 +769,16 @@ async def activate_license(request: ActivationRequest):
 
                     cursor.execute("""
                         UPDATE hwid_bindings
-                        SET last_seen=?, pc_name=?, login=?
+                        SET last_seen=?, pc_name=?, login=?, email=?, password=?
                         WHERE hwid=? AND license_key=?
-                    """, (datetime.now().isoformat(), request.pc_name, request.login, request.hwid, request.license_key))
+                    """, (datetime.now().isoformat(), request.pc_name, request.login, request.email, request.password, request.hwid, request.license_key))
 
             else:
                 # NÃO TEM HWID VINCULADO → VINCULAR AGORA (primeiro uso)
                 cursor.execute("""
-                    INSERT INTO hwid_bindings (license_key, hwid, pc_name, login)
-                    VALUES (?, ?, ?, ?)
-                """, (request.license_key, request.hwid, request.pc_name, request.login))
+                    INSERT INTO hwid_bindings (license_key, hwid, pc_name, login, email, password)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (request.license_key, request.hwid, request.pc_name, request.login, request.email, request.password))
 
                 logger.info(f"🔗 HWID vinculado pela primeira vez:")
                 logger.info(f"   License: {request.license_key[:10]}...")
@@ -1371,7 +1374,7 @@ async def get_all_users(
     with db_pool.get_read_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT login, pc_name, license_key, bound_at, last_seen, hwid
+            SELECT login, pc_name, license_key, bound_at, last_seen, hwid, email, password
             FROM hwid_bindings
             ORDER BY last_seen DESC
         """)
@@ -1386,6 +1389,8 @@ async def get_all_users(
             "created_at": user[3],
             "last_seen": user[4],
             "hwid": user[5],
+            "email": user[6] or "N/A",
+            "password": user[7] or "N/A",
             "is_active": user[2] in active_sessions
         }
         for idx, user in enumerate(users)
@@ -1431,6 +1436,56 @@ async def delete_user(
         raise
     except Exception as e:
         logger.error(f"Erro ao deletar usuário: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/api/reset-password")
+async def reset_password(
+    request: dict,
+    admin_password: str = Header(None, alias="admin_password"),
+    password: str = None  # Query param alternativo
+):
+    """Resetar senha de um usuário (requer senha admin)"""
+    # ✅ FIX: Aceitar senha de header OU query param
+    senha_recebida = admin_password or password
+
+    if senha_recebida != ADMIN_PASSWORD:
+        logger.error(f"❌ RESET PASSWORD - Senha incorreta: '{senha_recebida}'")
+        raise HTTPException(status_code=401, detail="Senha de admin inválida")
+
+    license_key = request.get("license_key")
+    new_password = request.get("new_password")
+
+    if not license_key or not new_password:
+        raise HTTPException(status_code=400, detail="license_key e new_password são obrigatórios")
+
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Senha deve ter no mínimo 6 caracteres")
+
+    try:
+        with db_pool.get_write_connection() as conn:
+            cursor = conn.cursor()
+
+            # Verificar se usuário existe
+            cursor.execute("SELECT login FROM hwid_bindings WHERE license_key = ?", (license_key,))
+            user = cursor.fetchone()
+
+            if not user:
+                raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+            # Atualizar senha
+            cursor.execute("""
+                UPDATE hwid_bindings
+                SET password = ?
+                WHERE license_key = ?
+            """, (new_password, license_key))
+
+        logger.info(f"🔑 Admin resetou senha do usuário: {user[0]} (License: {license_key[:10]}...)")
+        return {"success": True, "message": f"Senha de '{user[0]}' resetada com sucesso"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao resetar senha: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin/api/stats")

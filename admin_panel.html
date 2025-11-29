@@ -317,6 +317,8 @@
                         <tr>
                             <th>ID</th>
                             <th>Login</th>
+                            <th>Email</th>
+                            <th>Senha</th>
                             <th>PC Name</th>
                             <th>License Key</th>
                             <th>Cadastrado</th>
@@ -448,14 +450,24 @@
                     ? '<span class="status-badge status-active">🟢 Online</span>'
                     : '<span class="status-badge status-inactive">⚪ Offline</span>';
 
+                // Mascarar senha (mostrar apenas primeiro e último caractere)
+                const maskedPassword = user.password !== 'N/A' && user.password.length > 0
+                    ? user.password[0] + '*'.repeat(Math.max(0, user.password.length - 2)) + (user.password.length > 1 ? user.password[user.password.length - 1] : '')
+                    : 'N/A';
+
                 tr.innerHTML = `
                     <td>${user.id}</td>
-                    <td>${user.login}</td>
+                    <td><strong>${user.login}</strong></td>
+                    <td>${user.email || 'N/A'}</td>
+                    <td><span style="font-family: monospace;">${maskedPassword}</span></td>
                     <td>${user.pc_name || 'N/A'}</td>
-                    <td>${user.license_key.substring(0, 20)}...</td>
+                    <td style="font-family: monospace; font-size: 0.85em; word-break: break-all;">${user.license_key}</td>
                     <td>${new Date(user.created_at).toLocaleString('pt-BR')}</td>
                     <td>${statusBadge}</td>
                     <td class="user-actions">
+                        <button class="btn-small btn-primary" onclick="resetPassword('${user.license_key}', '${user.login}')">
+                            🔑 Reset Senha
+                        </button>
                         <button class="btn-small btn-danger" onclick="deleteUser('${user.license_key}', '${user.login}')">
                             🗑️ Deletar
                         </button>
@@ -470,7 +482,7 @@
         }
 
         // Reset password
-        function resetPassword(userId, username) {
+        function resetPassword(licenseKey, username) {
             const newPassword = prompt(`Digite a nova senha para ${username}:`);
 
             if (!newPassword) return;
@@ -486,15 +498,19 @@
                     'Content-Type': 'application/json',
                     'admin_password': adminPassword
                 },
-                body: JSON.stringify({ user_id: userId, new_password: newPassword })
+                body: JSON.stringify({ license_key: licenseKey, new_password: newPassword })
             })
             .then(res => res.json())
             .then(data => {
                 if (data.success) {
                     showMessage(`✅ ${data.message}`, 'success');
+                    loadUsers();  // Atualizar lista
                 } else {
                     showMessage(`❌ ${data.message}`, 'error');
                 }
+            })
+            .catch(err => {
+                showMessage(`❌ Erro ao resetar senha: ${err.message}`, 'error');
             });
         }
 
