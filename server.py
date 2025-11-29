@@ -267,7 +267,10 @@ def init_database():
                 pc_name TEXT,
                 login TEXT,
                 email TEXT,
-                password TEXT
+                password TEXT,
+                total_fish INTEGER DEFAULT 0,
+                month_fish INTEGER DEFAULT 0,
+                last_fish_date TEXT
             )
         """)
 
@@ -300,11 +303,12 @@ class FishingSession:
     Mantém fish_count e decide quando executar ações (feed/clean/break/rod_switch)
     CLIENTE NÃO TEM ACESSO A ESSAS REGRAS - TUDO CONTROLADO PELO SERVIDOR
     """
-    def __init__(self, login: str):
+    def __init__(self, login: str, license_key: str = None):
         # ✅ CORREÇÃO #6: Thread-safety para modificações de estado (100+ usuários)
         self.lock = threading.RLock()
 
         self.login = login
+        self.license_key = license_key  # ✅ NOVO: Para salvar stats no banco
 
         # Contadores
         self.fish_count = 0
@@ -421,11 +425,15 @@ class FishingSession:
             raise
 
     def increment_fish(self):
-        """Incrementar contador de peixes"""
+        """Incrementar contador de peixes e salvar no banco"""
         with self.lock:
             self.fish_count += 1
             self.last_fish_time = datetime.now()
             logger.info(f"🐟 {self.login}: Peixe #{self.fish_count} capturado!")
+
+            # ✅ NOVO: Salvar no banco de dados
+            if self.license_key:
+                self._save_fish_count_to_db()
 
     def increment_timeout(self, current_rod: int):
         """
@@ -632,6 +640,88 @@ class FishingSession:
 
         return next_pair[0]  # Retornar primeira vara do par
 
+    def _save_fish_count_to_db(self):
+        """
+        ✅ NOVO: Salvar fish_count no banco de dados
+
+        Atualiza total_fish e month_fish (reseta month_fish no dia 1 do mês)
+        """
+        try:
+            from datetime import date
+            today = date.today()
+            current_month = today.strftime("%Y-%m")
+
+            with db_pool.get_write_connection() as conn:
+                cursor = conn.cursor()
+
+                # Buscar última data de pesca
+                cursor.execute("SELECT last_fish_date, total_fish, month_fish FROM hwid_bindings WHERE license_key = ?",
+                             (self.license_key,))
+                row = cursor.fetchone()
+
+                if row:
+                    last_fish_date, total_fish, month_fish = row
+
+                    # Verificar se é um novo mês
+                    if last_fish_date:
+                        last_month = last_fish_date[:7]  # "YYYY-MM"
+                        if last_month != current_month:
+                            # Novo mês! Resetar month_fish
+                            month_fish = 1
+                            logger.info(f"📅 {self.login}: Novo mês detectado! Resetando month_fish.")
+                        else:
+                            month_fish = (month_fish or 0) + 1
+                    else:
+                        month_fish = 1
+
+                    total_fish = (total_fish or 0) + 1
+
+                    # Atualizar banco
+                    cursor.execute("""
+                        UPDATE hwid_bindings
+                        SET total_fish = ?, month_fish = ?, last_fish_date = ?, last_seen = ?
+                        WHERE license_key = ?
+                    """, (total_fish, month_fish, today.isoformat(), datetime.now().isoformat(), self.license_key))
+
+                    logger.debug(f"💾 {self.login}: Stats salvas - Total: {total_fish}, Mês: {month_fish}")
+
+        except Exception as e:
+            logger.error(f"❌ {self.login}: Erro ao salvar fish_count no banco: {e}")
+
+    def stop_fishing(self):
+        """
+        🛑 Parar fishing - RESETA VARA PARA SLOT 1
+
+        Chamado quando cliente para o bot (F2 ou stop button).
+        SEMPRE reseta para vara 1 para evitar dessincronização.
+        """
+        with self.lock:
+            logger.info(f"🛑 {self.login}: Bot parado - resetando sistema de varas")
+
+            # ✅ RESET: Sempre voltar para PAR 1, VARA 1 (slot absoluto 1)
+            # Evita dessincronização quando usuário para e troca vara manualmente
+            self.current_pair_index = 0  # Volta pro par 1
+            self.current_rod = 1         # Volta pra vara 1 (slot absoluto)
+
+            logger.info(f"   ✅ Sistema resetado - próximo início será SEMPRE na vara 1 (slot absoluto)")
+
+    def pause_fishing(self):
+        """
+        ⏸️ Pausar fishing - RESETA VARA PARA SLOT 1
+
+        Chamado quando cliente pausa o bot (F1).
+        SEMPRE reseta para vara 1 para evitar dessincronização.
+        """
+        with self.lock:
+            logger.info(f"⏸️ {self.login}: Bot pausado - resetando sistema de varas")
+
+            # ✅ RESET: Sempre voltar para PAR 1, VARA 1 (slot absoluto 1)
+            # Evita dessincronização quando usuário pausa e troca vara manualmente
+            self.current_pair_index = 0  # Volta pro par 1
+            self.current_rod = 1         # Volta pra vara 1 (slot absoluto)
+
+            logger.info(f"   ✅ Sistema resetado - ao despausar começará SEMPRE na vara 1 (slot absoluto)")
+
     def cleanup(self):
         """
         ✅ CORREÇÃO #3: Cleanup de recursos ao desconectar
@@ -645,6 +735,11 @@ class FishingSession:
             logger.info(f"   Peixes capturados: {self.fish_count}")
             logger.info(f"   Timeouts totais: {self.total_timeouts}")
             logger.info(f"   Vara atual: {self.current_rod}")
+
+            # ✅ RESET: Resetar vara para slot 1 no cleanup também
+            self.current_pair_index = 0
+            self.current_rod = 1
+            logger.info(f"   ✅ Vara resetada para slot 1 no cleanup")
 
             # Limpar referências (opcional, mas boa prática)
             self.user_config.clear()
@@ -982,7 +1077,7 @@ async def websocket_endpoint(websocket: WebSocket):
         login, pc_name = binding
 
         # 3. CRIAR FISHING SESSION (mantém fish_count e decide ações)
-        session = FishingSession(login)
+        session = FishingSession(login, license_key=license_key)
 
         # 4. REGISTRAR SESSÃO ATIVA (thread-safe)
         async with sessions_lock:
@@ -1389,6 +1484,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.info(f"✅ {login}: Limpeza concluída")
 
             # ─────────────────────────────────────────────────
+            # ✅ NOVO: EVENTO: Bot parado (F2 ou stop button)
+            # ─────────────────────────────────────────────────
+            elif event == "fishing_stopped":
+                logger.info(f"🛑 {login}: Cliente parou o bot")
+                session.stop_fishing()  # Reseta vara para slot 1
+
+            # ─────────────────────────────────────────────────
+            # ✅ NOVO: EVENTO: Bot pausado (F1)
+            # ─────────────────────────────────────────────────
+            elif event == "fishing_paused":
+                logger.info(f"⏸️ {login}: Cliente pausou o bot")
+                session.pause_fishing()  # Reseta vara para slot 1
+
+            # ─────────────────────────────────────────────────
             # PING (heartbeat)
             # ─────────────────────────────────────────────────
             elif event == "ping":
@@ -1411,6 +1520,167 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 del active_sessions[license_key]
                 logger.info(f"🗑️ Sessão removida: {license_key}")
+
+# ═══════════════════════════════════════════════════════
+# API PÚBLICA: STATS E RANKING
+# ═══════════════════════════════════════════════════════
+
+@app.get("/api/stats/{license_key}")
+async def get_user_stats(license_key: str):
+    """
+    📊 Retornar estatísticas do usuário
+
+    Retorna:
+    - username (login)
+    - total_fish (total de peixes de todos os tempos)
+    - month_fish (peixes do mês atual)
+    - rank_monthly (posição no ranking mensal)
+    - rank_alltime (posição no ranking geral)
+    """
+    try:
+        from datetime import date
+        current_month = date.today().strftime("%Y-%m")
+
+        with db_pool.get_read_connection() as conn:
+            cursor = conn.cursor()
+
+            # Buscar dados do usuário
+            cursor.execute("""
+                SELECT login, total_fish, month_fish, last_fish_date
+                FROM hwid_bindings
+                WHERE license_key = ?
+            """, (license_key,))
+
+            row = cursor.fetchone()
+
+            if not row:
+                raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+            login, total_fish, month_fish, last_fish_date = row
+
+            # Resetar month_fish se for mês diferente
+            if last_fish_date and last_fish_date[:7] != current_month:
+                month_fish = 0
+
+            # Calcular ranking mensal
+            cursor.execute("""
+                SELECT COUNT(*) + 1
+                FROM hwid_bindings
+                WHERE month_fish > ? AND (last_fish_date IS NULL OR last_fish_date >= ?)
+            """, (month_fish or 0, f"{current_month}-01"))
+            rank_monthly = cursor.fetchone()[0]
+
+            # Calcular ranking geral
+            cursor.execute("""
+                SELECT COUNT(*) + 1
+                FROM hwid_bindings
+                WHERE total_fish > ?
+            """, (total_fish or 0,))
+            rank_alltime = cursor.fetchone()[0]
+
+            return {
+                "username": login or "Anônimo",
+                "total_fish": total_fish or 0,
+                "month_fish": month_fish or 0,
+                "rank_monthly": rank_monthly,
+                "rank_alltime": rank_alltime
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar stats do usuário: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/ranking/monthly")
+async def get_monthly_ranking():
+    """
+    🏆 Retornar TOP 5 ranking mensal
+
+    Retorna lista de usuários com mais peixes capturados este mês
+    """
+    try:
+        from datetime import date
+        current_month = date.today().strftime("%Y-%m")
+        month_start = f"{current_month}-01"
+
+        with db_pool.get_read_connection() as conn:
+            cursor = conn.cursor()
+
+            # Buscar TOP 5 do mês
+            cursor.execute("""
+                SELECT login, month_fish
+                FROM hwid_bindings
+                WHERE last_fish_date >= ? AND month_fish > 0
+                ORDER BY month_fish DESC
+                LIMIT 5
+            """, (month_start,))
+
+            rows = cursor.fetchall()
+
+            ranking = []
+            for idx, (login, month_fish) in enumerate(rows, start=1):
+                ranking.append({
+                    "rank": idx,
+                    "username": login or "Anônimo",
+                    "month_fish": month_fish or 0
+                })
+
+            # Calcular período do mês
+            today = date.today()
+            last_day = (date(today.year, today.month + 1, 1) if today.month < 12 else date(today.year + 1, 1, 1)) - date.resolution
+            month_end = last_day.isoformat()
+
+            return {
+                "month_start": month_start,
+                "month_end": month_end,
+                "ranking": ranking
+            }
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar ranking mensal: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/ranking/alltime")
+async def get_alltime_ranking():
+    """
+    🏆 Retornar TOP 5 ranking de todos os tempos
+
+    Retorna lista de usuários com mais peixes capturados no total
+    """
+    try:
+        with db_pool.get_read_connection() as conn:
+            cursor = conn.cursor()
+
+            # Buscar TOP 5 de todos os tempos
+            cursor.execute("""
+                SELECT login, total_fish
+                FROM hwid_bindings
+                WHERE total_fish > 0
+                ORDER BY total_fish DESC
+                LIMIT 5
+            """)
+
+            rows = cursor.fetchall()
+
+            ranking = []
+            for idx, (login, total_fish) in enumerate(rows, start=1):
+                ranking.append({
+                    "rank": idx,
+                    "username": login or "Anônimo",
+                    "total_fish": total_fish or 0
+                })
+
+            return {
+                "ranking": ranking
+            }
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar ranking geral: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ═══════════════════════════════════════════════════════
 # STARTUP
