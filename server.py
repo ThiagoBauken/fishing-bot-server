@@ -1002,6 +1002,32 @@ async def activate_license(request: ActivationRequest):
                     logger.warning(f"   HWID: {request.hwid[:16]}...")
                     logger.warning(f"   PC: {request.pc_name or 'N/A'}")
 
+                    # ✅ VALIDAÇÃO: Verificar se o novo login já existe (antes de remover binding antigo)
+                    if bound_login != request.login:
+                        # Usuário está mudando de login junto com license key
+                        cursor.execute("""
+                            SELECT license_key, pc_name
+                            FROM hwid_bindings
+                            WHERE login=? AND license_key!=?
+                        """, (request.login, request.license_key))
+
+                        login_conflict = cursor.fetchone()
+
+                        if login_conflict:
+                            # ❌ Login já existe!
+                            conflicting_license = login_conflict[0]
+                            conflicting_pc = login_conflict[1]
+
+                            logger.error(f"🚨 TENTATIVA DE USAR LOGIN JÁ EXISTENTE AO TROCAR LICENSE!")
+                            logger.error(f"   Login antigo: {bound_login}")
+                            logger.error(f"   Login tentado: {request.login}")
+                            logger.error(f"   Já usado por license: {conflicting_license[:10]}... (PC: {conflicting_pc})")
+
+                            raise HTTPException(
+                                status_code=409,
+                                detail=f"❌ Login '{request.login}' já está sendo usado! Escolha outro nome."
+                            )
+
                     # Remover binding antigo
                     cursor.execute("""
                         DELETE FROM hwid_bindings
@@ -1021,6 +1047,32 @@ async def activate_license(request: ActivationRequest):
                     # ✅ MESMO PC, MESMA LICENSE KEY - apenas atualizar timestamp
                     logger.info(f"✅ HWID válido: {request.login} (PC: {request.pc_name or 'N/A'})")
 
+                    # ✅ VALIDAÇÃO: Se mudou de login, verificar se o novo já existe
+                    if bound_login and bound_login != request.login:
+                        # Usuário está tentando mudar de login
+                        cursor.execute("""
+                            SELECT license_key, pc_name
+                            FROM hwid_bindings
+                            WHERE login=? AND license_key!=?
+                        """, (request.login, request.license_key))
+
+                        login_conflict = cursor.fetchone()
+
+                        if login_conflict:
+                            # ❌ Novo login já existe!
+                            conflicting_license = login_conflict[0]
+                            conflicting_pc = login_conflict[1]
+
+                            logger.error(f"🚨 TENTATIVA DE TROCAR PARA LOGIN JÁ EXISTENTE!")
+                            logger.error(f"   Login antigo: {bound_login}")
+                            logger.error(f"   Login tentado: {request.login}")
+                            logger.error(f"   Já usado por license: {conflicting_license[:10]}... (PC: {conflicting_pc})")
+
+                            raise HTTPException(
+                                status_code=409,
+                                detail=f"❌ Login '{request.login}' já está sendo usado! Escolha outro nome."
+                            )
+
                     cursor.execute("""
                         UPDATE hwid_bindings
                         SET last_seen=?, pc_name=?, login=?, email=?, password=?
@@ -1029,6 +1081,37 @@ async def activate_license(request: ActivationRequest):
 
             else:
                 # NÃO TEM HWID VINCULADO → VINCULAR AGORA (primeiro uso)
+
+                # ✅ VALIDAÇÃO: Verificar se login já existe com OUTRA license_key
+                cursor.execute("""
+                    SELECT license_key, hwid, pc_name
+                    FROM hwid_bindings
+                    WHERE login=? AND license_key!=?
+                """, (request.login, request.license_key))
+
+                login_conflict = cursor.fetchone()
+
+                if login_conflict:
+                    # ❌ Login já está sendo usado por outra pessoa!
+                    conflicting_license = login_conflict[0]
+                    conflicting_hwid = login_conflict[1]
+                    conflicting_pc = login_conflict[2]
+
+                    logger.error(f"🚨 TENTATIVA DE USAR LOGIN JÁ EXISTENTE!")
+                    logger.error(f"   Login tentado: {request.login}")
+                    logger.error(f"   Sua license: {request.license_key[:10]}...")
+                    logger.error(f"   Seu PC: {request.pc_name}")
+                    logger.error(f"   Login já usado por:")
+                    logger.error(f"     - License: {conflicting_license[:10]}...")
+                    logger.error(f"     - PC: {conflicting_pc}")
+                    logger.error(f"     - HWID: {conflicting_hwid[:16]}...")
+
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"❌ Login '{request.login}' já está sendo usado por outra pessoa! Escolha outro nome de usuário."
+                    )
+
+                # ✅ Login disponível - pode inserir
                 cursor.execute("""
                     INSERT INTO hwid_bindings (license_key, hwid, pc_name, login, email, password)
                     VALUES (?, ?, ?, ?, ?, ?)
