@@ -66,11 +66,23 @@ PROJECT_ID = os.getenv("PROJECT_ID", "67a4a76a-d71b-4d07-9ba8-f7e794ce0578")
 PORT = int(os.getenv("PORT", "8122"))
 
 # FastAPI app
+# ⚠️ SEGURANÇA: Desabilitar docs em produção (pode expor endpoints)
+ENABLE_DOCS = os.getenv("ENABLE_DOCS", "false").lower() == "true"
+
 app = FastAPI(
     title="Fishing Bot Server",
     description="Servidor multi-usuário para Fishing Bot",
-    version="1.0.0"
+    version="1.0.0",
+    docs_url="/docs" if ENABLE_DOCS else None,  # Desabilita /docs em produção
+    redoc_url="/redoc" if ENABLE_DOCS else None,  # Desabilita /redoc em produção
+    openapi_url="/openapi.json" if ENABLE_DOCS else None  # Desabilita schema em produção
 )
+
+if ENABLE_DOCS:
+    logger.warning("⚠️ ATENÇÃO: Documentação Swagger HABILITADA em /docs (não recomendado em produção!)")
+else:
+    logger.info("✅ Documentação Swagger DESABILITADA (segurança)")
+
 
 # CORS (permite conexões de qualquer origem)
 app.add_middleware(
