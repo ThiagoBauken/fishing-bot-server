@@ -1957,7 +1957,8 @@ async def get_all_users(
     with db_pool.get_read_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT login, pc_name, license_key, bound_at, last_seen, hwid, email, password
+            SELECT login, pc_name, license_key, bound_at, last_seen, hwid, email, password,
+                   total_fish, month_fish, last_fish_date
             FROM hwid_bindings
             ORDER BY last_seen DESC
         """)
@@ -1974,6 +1975,9 @@ async def get_all_users(
             "hwid": user[5],
             "email": user[6] or "N/A",
             "password": user[7] or "N/A",
+            "total_fish": user[8] or 0,  # ✅ NOVO: Peixes totais
+            "month_fish": user[9] or 0,  # ✅ NOVO: Peixes do mês
+            "last_fish_date": user[10],  # ✅ NOVO: Última pescaria
             "is_active": user[2] in active_sessions
         }
         for idx, user in enumerate(users)
