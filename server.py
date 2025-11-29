@@ -1308,6 +1308,127 @@ async def shutdown():
     logger.info("✅ Servidor encerrado")
 
 # ═══════════════════════════════════════════════════════
+# PAINEL ADMINISTRATIVO
+# ═══════════════════════════════════════════════════════
+
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi import Header
+from pydantic import BaseModel
+
+# Senha do painel admin (configurável via .env)
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+
+class AdminAction(BaseModel):
+    license_key: str
+    action: str  # 'delete', 'reset_password', 'toggle_active'
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_panel():
+    """Serve o painel administrativo HTML"""
+    try:
+        with open("admin_panel.html", "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Painel admin não encontrado")
+
+@app.get("/admin/api/users")
+async def get_all_users(admin_password: str = Header(None)):
+    """Lista todos os usuários (requer senha admin)"""
+    if admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Senha de admin inválida")
+
+    with db_pool.get_read_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT login, pc_name, license_key, bound_at, last_seen, hwid
+            FROM hwid_bindings
+            ORDER BY last_seen DESC
+        """)
+        users = cursor.fetchall()
+
+    users_list = [
+        {
+            "id": idx + 1,
+            "login": user[0],
+            "pc_name": user[1],
+            "license_key": user[2],
+            "created_at": user[3],
+            "last_seen": user[4],
+            "hwid": user[5],
+            "is_active": user[2] in active_sessions
+        }
+        for idx, user in enumerate(users)
+    ]
+
+    return {"success": True, "users": users_list}
+
+@app.delete("/admin/api/user/{license_key}")
+async def delete_user(license_key: str, admin_password: str = Header(None)):
+    """Deletar usuário (requer senha admin)"""
+    if admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Senha de admin inválida")
+
+    try:
+        with db_pool.get_write_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM hwid_bindings WHERE license_key = ?", (license_key,))
+
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+        # Desconectar se estiver ativo
+        async with sessions_lock:
+            if license_key in active_sessions:
+                try:
+                    await active_sessions[license_key]["websocket"].close()
+                except:
+                    pass
+                del active_sessions[license_key]
+
+        logger.info(f"🗑️ Admin deletou usuário: {license_key}")
+        return {"success": True, "message": "Usuário deletado com sucesso"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao deletar usuário: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/api/stats")
+async def get_admin_stats(admin_password: str = Header(None)):
+    """Estatísticas gerais do servidor"""
+    if admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Senha de admin inválida")
+
+    with db_pool.get_read_connection() as conn:
+        cursor = conn.cursor()
+
+        # Total de usuários
+        cursor.execute("SELECT COUNT(*) FROM hwid_bindings")
+        total_users = cursor.fetchone()[0]
+
+    # Calcular total de peixes de todas as sessões ativas
+    total_fish = 0
+    month_fish = 0  # TODO: Implementar contador mensal quando tiver tabela fish_stats
+
+    for session_data in active_sessions.values():
+        if "session" in session_data:
+            total_fish += session_data["session"].fish_count
+
+    return {
+        "success": True,
+        "stats": {
+            "total_users": total_users,
+            "active_users": len(active_sessions),  # ✅ CORRIGIDO: active_users ao invés de active_connections
+            "total_fish": total_fish,
+            "month_fish": month_fish,
+            "server_version": "2.0.0",
+            "keymaster_url": KEYMASTER_URL
+        }
+    }
+
+# ═══════════════════════════════════════════════════════
 # EXECUTAR SERVIDOR
 # ═══════════════════════════════════════════════════════
 
@@ -1327,3 +1448,4 @@ if __name__ == "__main__":
         reload=reload,
         log_level=log_level
     )
+
