@@ -1,5 +1,1 @@
-# Force EasyPanel to rebuild Docker container
-# This file triggers a rebuild when git commit is detected
-BUILD_VERSION=5.0.6
-BUILD_DATE=2025-11-29
-REBUILD_REASON=Fix Node.js server running instead of Python FastAPI
+%date% %time%
