@@ -1322,11 +1322,18 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi import Header
 from pydantic import BaseModel
 
-# Senha do painel admin (configurável via .env)
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+# Senha do painel admin
+# ✅ HARDCODED para debug (temporário)
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "AdminPesca2025Seguro")
 
-# ✅ DEBUG: Logar senha configurada (apenas primeiros 4 caracteres por segurança)
-logger.info(f"🔑 ADMIN_PASSWORD configurada: {ADMIN_PASSWORD[:4]}... (total: {len(ADMIN_PASSWORD)} caracteres)")
+# ✅ DEBUG: Logar senha configurada COMPLETA (apenas para debug!)
+logger.info(f"="*60)
+logger.info(f"🔑 ADMIN_PASSWORD HARDCODED DEBUG:")
+logger.info(f"   Valor completo: {ADMIN_PASSWORD}")
+logger.info(f"   Primeiros 4 chars: {ADMIN_PASSWORD[:4]}...")
+logger.info(f"   Total caracteres: {len(ADMIN_PASSWORD)}")
+logger.info(f"   Tipo: {type(ADMIN_PASSWORD)}")
+logger.info(f"="*60)
 
 class AdminAction(BaseModel):
     license_key: str
@@ -1348,7 +1355,10 @@ async def admin_panel():
 @app.get("/admin/api/users")
 async def get_all_users(admin_password: str = Header(None)):
     """Lista todos os usuários (requer senha admin)"""
+    logger.info(f"🔐 /admin/api/users - Senha recebida: '{admin_password}' vs esperada: '{ADMIN_PASSWORD}'")
+
     if admin_password != ADMIN_PASSWORD:
+        logger.error(f"❌ /admin/api/users - SENHA INCORRETA!")
         raise HTTPException(status_code=401, detail="Senha de admin inválida")
 
     with db_pool.get_read_connection() as conn:
@@ -1411,10 +1421,18 @@ async def delete_user(license_key: str, admin_password: str = Header(None)):
 @app.get("/admin/api/stats")
 async def get_admin_stats(admin_password: str = Header(None)):
     """Estatísticas gerais do servidor"""
-    # ✅ DEBUG: Logar tentativa de autenticação
-    logger.info(f"🔐 Tentativa de autenticação admin: senha recebida={admin_password[:4] if admin_password else 'None'}..., esperada={ADMIN_PASSWORD[:4]}...")
+    # ✅ DEBUG COMPLETO: Logar tentativa de autenticação
+    logger.info(f"="*60)
+    logger.info(f"🔐 AUTENTICAÇÃO ADMIN - DEBUG COMPLETO:")
+    logger.info(f"   Senha recebida: '{admin_password}'")
+    logger.info(f"   Senha esperada: '{ADMIN_PASSWORD}'")
+    logger.info(f"   Recebida length: {len(admin_password) if admin_password else 0}")
+    logger.info(f"   Esperada length: {len(ADMIN_PASSWORD)}")
+    logger.info(f"   Comparação: {admin_password == ADMIN_PASSWORD}")
+    logger.info(f"="*60)
 
     if admin_password != ADMIN_PASSWORD:
+        logger.error(f"❌ SENHA INCORRETA! Recebida='{admin_password}' != Esperada='{ADMIN_PASSWORD}'")
         raise HTTPException(status_code=401, detail="Senha de admin inválida")
 
     with db_pool.get_read_connection() as conn:
