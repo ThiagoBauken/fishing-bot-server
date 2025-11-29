@@ -1318,9 +1318,28 @@ from pydantic import BaseModel
 # Senha do painel admin (configurável via .env)
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 
+# ✅ DEBUG: Logar senha configurada (apenas primeiros 4 caracteres por segurança)
+logger.info(f"🔑 ADMIN_PASSWORD configurada: {ADMIN_PASSWORD[:4]}... (total: {len(ADMIN_PASSWORD)} caracteres)")
+
 class AdminAction(BaseModel):
     license_key: str
     action: str  # 'delete', 'reset_password', 'toggle_active'
+
+@app.get("/admin/debug")
+async def admin_debug():
+    """🐛 DEBUG: Mostra configuração do servidor (REMOVER EM PRODUÇÃO!)"""
+    import hashlib
+    password_hash = hashlib.md5(ADMIN_PASSWORD.encode()).hexdigest()
+
+    return {
+        "server": "Fishing Bot Server v2.0.0",
+        "admin_password_hash": password_hash,
+        "admin_password_length": len(ADMIN_PASSWORD),
+        "admin_password_first_chars": ADMIN_PASSWORD[:4] + "...",
+        "env_loaded": os.getenv("ADMIN_PASSWORD") is not None,
+        "port": PORT,
+        "keymaster_url": KEYMASTER_URL
+    }
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_panel():
@@ -1398,6 +1417,9 @@ async def delete_user(license_key: str, admin_password: str = Header(None)):
 @app.get("/admin/api/stats")
 async def get_admin_stats(admin_password: str = Header(None)):
     """Estatísticas gerais do servidor"""
+    # ✅ DEBUG: Logar tentativa de autenticação
+    logger.info(f"🔐 Tentativa de autenticação admin: senha recebida={admin_password[:4] if admin_password else 'None'}..., esperada={ADMIN_PASSWORD[:4]}...")
+
     if admin_password != ADMIN_PASSWORD:
         raise HTTPException(status_code=401, detail="Senha de admin inválida")
 
