@@ -24,6 +24,7 @@ const database = require('./database');
 const authRoutes = require('./auth-routes');
 const statsRoutes = require('./stats-routes');
 const adminRoutes = require('./admin-routes');
+const wsHandler = require('./ws-handler');
 
 // Criar app Express
 const app = express();
@@ -148,8 +149,8 @@ app.use((err, req, res, next) => {
 // Inicializar banco de dados
 database.initialize();
 
-// Iniciar servidor
-app.listen(PORT, () => {
+// Iniciar servidor HTTP
+const server = app.listen(PORT, () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════╗
 ║  🎣 Ultimate Fishing Bot v5.0 - Auth Server          ║
@@ -159,14 +160,30 @@ app.listen(PORT, () => {
 ║  📊 Banco: SQLite (fishing_bot_auth.db)               ║
 ║                                                       ║
 ║  📍 Endpoints:                                        ║
-║     POST /auth/register     - Cadastro               ║
-║     POST /auth/login        - Login                  ║
+║     POST /auth/register      - Cadastro              ║
+║     POST /auth/login         - Login                 ║
 ║     POST /auth/request-reset - Recuperar senha       ║
-║     POST /auth/reset-password - Resetar senha        ║
-║     GET  /api/stats/:key    - Estatísticas           ║
-║     GET  /admin             - Painel Admin           ║
+║     POST /auth/reset-password- Resetar senha         ║
+║     GET  /api/stats/:key     - Estatísticas          ║
+║     GET  /admin              - Painel Admin          ║
+║     WS   /ws                 - WebSocket             ║
 ╚═══════════════════════════════════════════════════════╝
   `);
+});
+
+// Inicializar WebSocket server
+wsHandler.createWebSocketServer(server);
+
+// Adicionar contador de usuários ativos ao endpoint raiz
+const originalRoot = app._router.stack.find(r => r.route && r.route.path === '/');
+app.get('/', (req, res) => {
+  res.json({
+    service: 'Fishing Bot Server',
+    version: '5.0.0',
+    status: 'online',
+    active_users: wsHandler.getActiveConnectionsCount(),
+    keymaster_integration: true
+  });
 });
 
 module.exports = app;
