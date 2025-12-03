@@ -136,7 +136,8 @@ def validate_with_keymaster(license_key: str, hwid: str) -> dict:
                 return {
                     "valid": True,
                     "message": "License válida",
-                    "plan": data.get("plan", "basic")
+                    "plan": data.get("plan", "basic"),
+                    "expires_at": data.get("expires_at")  # ✅ Incluir data de expiração
                 }
             else:
                 logger.warning(f"❌ Keymaster: License inválida ou expirada")
@@ -442,10 +443,12 @@ def increment_reset_attempts(license_key: str, hwid: str):
 # SESSÕES ATIVAS (em memória)
 # ═══════════════════════════════════════════════════════
 
-active_sessions: Dict[str, dict] = {}
+active_sessions: Dict[str, dict] = {}  # WebSocket connections (tempo real)
+active_http_logins: Dict[str, dict] = {}  # ✅ NOVO: HTTP logins recentes (últimas 24h)
 
 # ✅ CORREÇÃO #5: Thread-safety para active_sessions (100+ usuários simultâneos)
 sessions_lock = asyncio.Lock()
+http_logins_lock = asyncio.Lock()  # ✅ NOVO: Lock para HTTP logins
 
 # Regras de configuração (retornadas para o cliente)
 DEFAULT_RULES = {
@@ -454,6 +457,27 @@ DEFAULT_RULES = {
     "break_interval_fish": 50,     # Pausar a cada 50 peixes
     "break_duration_minutes": 45   # Duração do break
 }
+
+def clean_old_http_logins():
+    """Remove logins HTTP inativos (mais de 24 horas)"""
+    try:
+        now = datetime.now()
+        expired_keys = []
+
+        for key, session in active_http_logins.items():
+            last_seen = session.get("last_seen")
+            if last_seen:
+                time_diff = (now - last_seen).total_seconds()
+                if time_diff > 86400:  # 24 horas
+                    expired_keys.append(key)
+
+        for key in expired_keys:
+            login = active_http_logins[key].get("login", "unknown")
+            del active_http_logins[key]
+            logger.info(f"🧹 Removido login HTTP expirado: {login}")
+
+    except Exception as e:
+        logger.error(f"Erro ao limpar logins HTTP: {e}")
 
 class FishingSession:
     """
@@ -924,6 +948,15 @@ class ActivationResponse(BaseModel):
     message: str
     token: str = None
     rules: dict = None
+    # ✅ CORREÇÃO: Adicionar dados do usuário para o cliente exibir
+    login: str = None
+    license_key: str = None
+    hwid: str = None
+    pc_name: str = None
+    plan: str = None
+    expires_at: str = None
+    fish_count: int = 0
+    rank: str = None
 
 # ═══════════════════════════════════════════════════════
 # ROTAS HTTP
@@ -932,11 +965,26 @@ class ActivationResponse(BaseModel):
 @app.get("/")
 async def root():
     """Health check"""
+    # ✅ Limpar logins HTTP antigos antes de contar
+    clean_old_http_logins()
+
+    # ✅ Contar usuários únicos (HTTP + WebSocket)
+    # Usar license_key como identificador único
+    all_active_keys = set()
+    all_active_keys.update(active_sessions.keys())  # WebSocket
+    all_active_keys.update(active_http_logins.keys())  # HTTP
+
+    total_active = len(all_active_keys)
+    ws_active = len(active_sessions)
+    http_active = len(active_http_logins)
+
     return {
         "service": "Fishing Bot Server",
         "version": "2.0.0",
         "status": "online",
-        "active_users": len(active_sessions),
+        "active_users": total_active,  # ✅ Total único
+        "active_websockets": ws_active,  # WebSocket em tempo real
+        "active_http_sessions": http_active,  # Logins HTTP recentes
         "keymaster_integration": True
     }
 
@@ -965,9 +1013,11 @@ async def activate_license(request: ActivationRequest):
 
         if not keymaster_result["valid"]:
             logger.warning(f"❌ Keymaster rejeitou: {request.license_key[:10]}...")
-            return ActivationResponse(
-                success=False,
-                message=keymaster_result["message"]
+            # ✅ CORREÇÃO: Retornar HTTP 401 (Unauthorized) ao invés de 200 com success=False
+            # Isso garante que o cliente entenda que a autenticação falhou
+            raise HTTPException(
+                status_code=401,
+                detail=keymaster_result["message"]
             )
 
         logger.info(f"✅ Keymaster validou: {request.license_key[:10]}... (Plan: {keymaster_result.get('plan', 'N/A')})")
@@ -1131,11 +1181,32 @@ async def activate_license(request: ActivationRequest):
 
         logger.info(f"✅ Ativação bem-sucedida: {request.login}")
 
+        # ✅ NOVO: Registrar login HTTP como sessão ativa
+        async with http_logins_lock:
+            active_http_logins[request.license_key] = {
+                "login": request.login,
+                "pc_name": request.pc_name,
+                "hwid": request.hwid,
+                "last_seen": datetime.now(),
+                "login_type": "http"  # Diferencia de WebSocket
+            }
+
+        logger.info(f"📊 Usuário adicionado a sessões HTTP: {request.login}")
+
+        # ✅ CORREÇÃO: Incluir dados do usuário na resposta
         return ActivationResponse(
             success=True,
             message="Ativação bem-sucedida!",
             token=token,
-            rules=DEFAULT_RULES
+            rules=DEFAULT_RULES,
+            login=request.login,
+            license_key=request.license_key,
+            hwid=request.hwid,
+            pc_name=request.pc_name,
+            plan=keymaster_result.get("plan", "basic"),
+            expires_at=keymaster_result.get("expires_at"),
+            fish_count=0,  # TODO: Buscar do banco se tiver stats
+            rank="Iniciante"  # TODO: Calcular rank real
         )
 
     except Exception as e:
@@ -2250,11 +2321,25 @@ async def get_admin_stats(
         if "session" in session_data:
             total_fish += session_data["session"].fish_count
 
+    # ✅ Limpar logins HTTP antigos antes de contar
+    clean_old_http_logins()
+
+    # ✅ Contar usuários únicos (HTTP + WebSocket)
+    all_active_keys = set()
+    all_active_keys.update(active_sessions.keys())  # WebSocket
+    all_active_keys.update(active_http_logins.keys())  # HTTP
+
+    total_active = len(all_active_keys)
+    ws_active = len(active_sessions)
+    http_active = len(active_http_logins)
+
     return {
         "success": True,
         "stats": {
             "total_users": total_users,
-            "active_users": len(active_sessions),  # ✅ CORRIGIDO: active_users ao invés de active_connections
+            "active_users": total_active,  # ✅ Total único (HTTP + WebSocket)
+            "active_websockets": ws_active,  # Apenas WebSocket
+            "active_http_sessions": http_active,  # Apenas HTTP
             "total_fish": total_fish,
             "month_fish": month_fish,
             "server_version": "2.0.0",
