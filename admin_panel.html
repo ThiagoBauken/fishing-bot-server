@@ -248,6 +248,46 @@
         #logout-btn:hover {
             background: #c82333;
         }
+
+        .search-box {
+            margin-bottom: 20px;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            font-size: 1rem;
+            background: rgba(255, 255, 255, 0.1);
+            color: #ffffff;
+            backdrop-filter: blur(10px);
+            transition: all 0.3s;
+        }
+
+        .search-box input::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        .search-box input:focus {
+            outline: none;
+            border-color: #00ff88;
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .search-info {
+            margin-top: 10px;
+            color: #cccccc;
+            font-size: 0.9rem;
+        }
+
+        .highlight {
+            background-color: #ffc107;
+            color: #000;
+            padding: 2px 4px;
+            border-radius: 2px;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -304,6 +344,19 @@
             <div class="users-section">
                 <h2>👥 Usuários Cadastrados</h2>
 
+                <!-- Search Box -->
+                <div class="search-box">
+                    <input
+                        type="text"
+                        id="user-search"
+                        placeholder="🔍 Buscar por nome, email, license key ou PC name..."
+                        oninput="filterUsers()"
+                    >
+                    <div class="search-info" id="search-info">
+                        Mostrando <strong id="filtered-count">0</strong> de <strong id="total-count">0</strong> usuários
+                    </div>
+                </div>
+
                 <button class="btn btn-primary" onclick="loadUsers()" style="max-width: 200px;">
                     🔄 Atualizar
                 </button>
@@ -337,6 +390,7 @@
 
     <script>
         let adminPassword = '';
+        let allUsers = [];  // Armazenar todos os usuários para filtragem
 
         // Login
         function login() {
@@ -424,6 +478,9 @@
 
         // Load users
         function loadUsers() {
+            // Limpar busca ao recarregar
+            document.getElementById('user-search').value = '';
+
             document.getElementById('users-loading').style.display = 'block';
             document.getElementById('users-table').style.display = 'none';
 
@@ -443,6 +500,9 @@
 
         // Render users
         function renderUsers(users) {
+            allUsers = users;  // Salvar para filtragem
+            updateUserCounts(users.length, users.length);  // Atualizar contadores
+
             const tbody = document.getElementById('users-tbody');
             tbody.innerHTML = '';
 
@@ -548,6 +608,100 @@
             .catch(err => {
                 showMessage(`❌ Erro ao deletar usuário: ${err.message}`, 'error');
             });
+        }
+
+        // Filter users by search query
+        function filterUsers() {
+            const searchQuery = document.getElementById('user-search').value.toLowerCase().trim();
+
+            if (!searchQuery) {
+                // Se não tem busca, mostrar todos
+                renderUsers(allUsers);
+                return;
+            }
+
+            // Filtrar por login, license_key, email ou pc_name
+            const filteredUsers = allUsers.filter(user => {
+                const login = (user.login || '').toLowerCase();
+                const licenseKey = (user.license_key || '').toLowerCase();
+                const email = (user.email || '').toLowerCase();
+                const pcName = (user.pc_name || '').toLowerCase();
+
+                return login.includes(searchQuery) ||
+                       licenseKey.includes(searchQuery) ||
+                       email.includes(searchQuery) ||
+                       pcName.includes(searchQuery);
+            });
+
+            // Renderizar apenas os filtrados
+            renderFilteredUsers(filteredUsers);
+            updateUserCounts(filteredUsers.length, allUsers.length);
+        }
+
+        // Render filtered users (sem atualizar allUsers)
+        function renderFilteredUsers(users) {
+            const tbody = document.getElementById('users-tbody');
+            tbody.innerHTML = '';
+
+            if (users.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="12" style="text-align: center; padding: 40px; color: #888;">
+                            🔍 Nenhum usuário encontrado
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            users.forEach(user => {
+                const tr = document.createElement('tr');
+
+                const statusBadge = user.is_active
+                    ? '<span class="status-badge status-active">🟢 Online</span>'
+                    : '<span class="status-badge status-inactive">⚪ Offline</span>';
+
+                const maskedPassword = user.password !== 'N/A' && user.password.length > 0
+                    ? user.password[0] + '*'.repeat(Math.max(0, user.password.length - 2)) + (user.password.length > 1 ? user.password[user.password.length - 1] : '')
+                    : 'N/A';
+
+                const lastFishDate = user.last_fish_date
+                    ? new Date(user.last_fish_date).toLocaleString('pt-BR')
+                    : '<span style="color: #888;">Nunca pescou</span>';
+
+                tr.innerHTML = `
+                    <td>${user.id}</td>
+                    <td><strong>${user.login}</strong></td>
+                    <td>${user.email || 'N/A'}</td>
+                    <td><span style="font-family: monospace;">${maskedPassword}</span></td>
+                    <td>${user.pc_name || 'N/A'}</td>
+                    <td style="font-family: monospace; font-size: 0.85em; word-break: break-all;">${user.license_key}</td>
+                    <td><strong style="color: #28a745;">${user.total_fish || 0}</strong></td>
+                    <td><strong style="color: #0078d7;">${user.month_fish || 0}</strong></td>
+                    <td style="font-size: 0.85em;">${lastFishDate}</td>
+                    <td>${new Date(user.created_at).toLocaleString('pt-BR')}</td>
+                    <td>${statusBadge}</td>
+                    <td class="user-actions">
+                        <button class="btn-small btn-primary" onclick="resetPassword('${user.license_key}', '${user.login}')">
+                            🔑 Reset Senha
+                        </button>
+                        <button class="btn-small btn-danger" onclick="deleteUser('${user.license_key}', '${user.login}')">
+                            🗑️ Deletar
+                        </button>
+                    </td>
+                `;
+
+                tbody.appendChild(tr);
+            });
+
+            document.getElementById('users-loading').style.display = 'none';
+            document.getElementById('users-table').style.display = 'table';
+        }
+
+        // Update user counts
+        function updateUserCounts(filtered, total) {
+            document.getElementById('filtered-count').textContent = filtered;
+            document.getElementById('total-count').textContent = total;
         }
 
         // Toggle active
