@@ -1669,6 +1669,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     logger.info(f"🧹 {login}: Operação CLEANING adicionada ao batch (timeout vara {current_rod})")
 
+                    # 🎣 PRIORIDADE 4: MODO 2 VARAS - Alternar vara após timeout
+                    if session.two_rod_mode:
+                        # Alternar entre vara 1 e 2
+                        next_rod = 2 if current_rod == 1 else 1
+                        operations.append({
+                            "type": "switch_rod",
+                            "params": {
+                                "target_rod": next_rod
+                            }
+                        })
+                        logger.info(f"🎣 {login}: MODO 2 VARAS - Alternando após timeout: vara {current_rod} → vara {next_rod}")
+
                     # ✅ ENVIAR BATCH
                     await websocket.send_json({
                         "cmd": "execute_batch",
