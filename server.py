@@ -1548,17 +1548,23 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     logger.info(f"🧹 {login}: Operação CLEANING adicionada ao batch")
 
-                # 🔄 PRIORIDADE 4: Trocar vara dentro do par (SEMPRE após pescar)
+                # 🔄 PRIORIDADE 4: Trocar vara dentro do par (após pescar)
                 # ✅ CORREÇÃO: Cliente NÃO decide mais - servidor envia comando!
                 # Regra: Trocar vara a cada peixe (vara 1 → vara 2 → vara 1 → ...)
-                logger.info(f"🔍 {login}: DEBUG - Adicionando switch_rod (sempre executado)...")
-                operations.append({
-                    "type": "switch_rod",
-                    "params": {
-                        "will_open_chest": False  # Troca sem abrir baú
-                    }
-                })
-                logger.info(f"🔄 {login}: Operação SWITCH_ROD adicionada ao batch (troca no par)")
+                # ⚠️ IMPORTANTE: NÃO trocar se houve MAINTENANCE (vara foi recarregada!)
+                has_maintenance = any(op["type"] == "maintenance" for op in operations)
+
+                if not has_maintenance:
+                    logger.info(f"🔍 {login}: DEBUG - Adicionando switch_rod (nenhuma manutenção)...")
+                    operations.append({
+                        "type": "switch_rod",
+                        "params": {
+                            "will_open_chest": False  # Troca sem abrir baú
+                        }
+                    })
+                    logger.info(f"🔄 {login}: Operação SWITCH_ROD adicionada ao batch (troca no par)")
+                else:
+                    logger.info(f"🔄 {login}: SKIP switch_rod (vara foi recarregada no maintenance)")
 
                 # ☕ PRIORIDADE 4: Pausar (a cada N peixes ou tempo)
                 if session.should_break():
